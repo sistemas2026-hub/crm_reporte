@@ -8,7 +8,22 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Supabase URL and Anon Key are required in .env');
 }
 
-// 🛡️ STORAGE ANTI-500: Previene que Supabase borre la sesión si falla el refresh token
+// 🛡️ STORAGE ANTI-500 V2: Detecta sesiones corruptas y las limpia automáticamente
+let refreshFailCount = 0;
+const MAX_REFRESH_FAILS = 3;
+
+export function clearCorruptedSession() {
+  const KEYS = [
+    `sb-${supabaseUrl.split('.')[0].split('//')[1]}-auth-token`,
+    `sb-${supabaseUrl.split('.')[0].split('//')[1]}-auth-token-code-verifier`,
+  ];
+  console.warn('[Supabase:Storage] 🗑️ Limpiando sesión corrupta del navegador...');
+  KEYS.forEach(k => window.localStorage.removeItem(k));
+  // También limpiar clave legacy por si existe
+  window.localStorage.removeItem('sb-rapilink-auth-token');
+  refreshFailCount = 0;
+}
+
 const safeStorage = {
   getItem: (key: string) => {
     return window.localStorage.getItem(key);
@@ -17,11 +32,24 @@ const safeStorage = {
     window.localStorage.setItem(key, value);
   },
   removeItem: (key: string) => {
-    // Si la sesión cae por error de red 500, no borramos el localStorage
-    if (key.includes('sb-rapilink-auth-token') && !(window as any).__isIntentionalLogout) {
-      console.warn(`[Supabase:Storage] 🛡️ Ignorando intento de borrar '${key}'. Posible error 500 de API.`);
-      return; 
+    // Si Supabase intenta borrar el token por error de refresh, contar los intentos
+    if (key.includes('-auth-token') && key.startsWith('sb-') && !(window as any).__isIntentionalLogout) {
+      refreshFailCount++;
+
+      // Después de N fallos consecutivos, la sesión está corrupta - permitir limpieza
+      if (refreshFailCount >= MAX_REFRESH_FAILS) {
+        console.warn(`[Supabase:Storage] 🗑️ ${MAX_REFRESH_FAILS} fallos de refresh consecutivos. Sesión corrupta confirmada, limpiando...`);
+        window.localStorage.removeItem(key);
+        refreshFailCount = 0;
+        return;
+      }
+
+      console.warn(`[Supabase:Storage] 🛡️ Ignorando intento de borrar '${key}' (fallo ${refreshFailCount}/${MAX_REFRESH_FAILS}). Esperando confirmación...`);
+      return;
     }
+
+    // Logout intencional o limpieza automática después de fallos - permitir
+    refreshFailCount = 0;
     window.localStorage.removeItem(key);
   }
 };
@@ -29,10 +57,11 @@ const safeStorage = {
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
-    autoRefreshToken: true,
+    autoRefreshToken: true, // ✅ Restaurado - fallos manejados por contador de reintentos
     detectSessionInUrl: true,
     storage: safeStorage,
-    storageKey: 'sb-rapilink-auth-token'
+    // ⚠️ storageKey eliminado: usar la clave automática de Supabase (sb-{projectId}-auth-token)
+    // El override 'sb-rapilink-auth-token' causaba conflicto con la sesión real → error 400 y Multiple GoTrueClient
   }
 });
 

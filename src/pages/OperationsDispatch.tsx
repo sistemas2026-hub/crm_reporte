@@ -719,28 +719,78 @@ export function OperationsDispatch() {
 
         try {
             const manifestEntries: Record<string, string> = {};
+            const failedTickets: Array<{ ticket: DispatchTicket; techId: string }> = [];
 
-            // Ejecutar TODAS las reasignaciones en PARALELO (no en serie)
+            // PRIMERA PASADA: Ejecutar TODAS las reasignaciones en PARALELO
             await Promise.all(
                 entries.flatMap(([techId, routeTickets]) => {
                     const technician = technicians.find(t => t.id === techId);
                     return routeTickets.map(async (ticket) => {
                         const ok = await WorkflowService.changeWispHubTechnician(ticket.id, techId);
                         if (ok && technician) {
-                            manifestEntries[ticket.id] = technician.full_name || 'Desconocido';
+                            manifestEntries[String(ticket.id)] = technician.full_name || 'Desconocido';
+                        } else {
+                            // Capturar fallos para reintentar
+                            failedTickets.push({ ticket, techId });
                         }
                     });
                 })
             );
 
+            // SEGUNDA PASADA: Reintentar tickets fallidos secuencialmente con delay
+            const stillFailed: typeof failedTickets = [];
+            for (const { ticket, techId } of failedTickets) {
+                await new Promise(r => setTimeout(r, 600));
+                const ok = await WorkflowService.changeWispHubTechnician(ticket.id, techId);
+                if (ok) {
+                    const technician = technicians.find(t => t.id === techId);
+                    manifestEntries[String(ticket.id)] = technician?.full_name || 'Desconocido';
+                    console.log(`[handlePublish] ✅ Reintento exitoso: ticket ${ticket.id} asignado a ${technician?.full_name}`);
+                } else {
+                    stillFailed.push({ ticket, techId });
+                    console.warn(`[handlePublish] ❌ Fallo definitivo tras reintento: ticket ${ticket.id}`);
+                }
+            }
+
             // Guardar manifiesto local y auditoría
             saveManualDispatch(manifestEntries);
-            const techCount = Object.keys(manifestEntries).length > 0 ? entries.length : 0;
-            await WorkflowService.logDispatchBatch(techCount, Object.keys(manifestEntries).length, { manifest: manifestEntries });
+
+            // Conteo correcto de técnicos únicos con éxito
+            const successfulTechIds = new Set(
+                entries
+                    .filter(([_techId, routeTickets]) => routeTickets.some(t => manifestEntries[String(t.id)]))
+                    .map(([techId]) => techId)
+            );
+            const techCount = successfulTechIds.size;
+
+            await WorkflowService.logDispatchBatch(techCount, Object.keys(manifestEntries).length, {
+                manifest: manifestEntries,
+                failed_ids: stillFailed.map(f => String(f.ticket.id))
+            });
 
             mutateTickets();
 
-            window.dispatchEvent(new CustomEvent('app:toast', { detail: { id: 'publish-progress', message: `¡Despacho publicado! ${Object.keys(manifestEntries).length}/${total} tickets reasignados.`, type: 'success' } }));
+            // Toast diferenciado según resultados
+            const successful = Object.keys(manifestEntries).length;
+            if (stillFailed.length === 0) {
+                window.dispatchEvent(new CustomEvent('app:toast', {
+                    detail: {
+                        id: 'publish-progress',
+                        message: `¡Despacho publicado! ${successful}/${total} tickets reasignados.`,
+                        type: 'success'
+                    }
+                }));
+            } else {
+                const failedNames = stillFailed.map(f => f.ticket.asunto).join(', ');
+                window.dispatchEvent(new CustomEvent('app:toast', {
+                    detail: {
+                        id: 'publish-progress',
+                        message: `⚠️ ${successful}/${total} publicados. Fallos: ${failedNames}`,
+                        type: 'warning',
+                        duration: 8000
+                    }
+                }));
+            }
         } catch (e) {
             console.error('[handlePublish] Error:', e);
             window.dispatchEvent(new CustomEvent('app:toast', { detail: { id: 'publish-progress', message: 'Error al publicar despacho. Revisa la consola.', type: 'error' } }));

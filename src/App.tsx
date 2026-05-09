@@ -1,8 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { supabase } from './lib/supabase';
+import { supabase, clearCorruptedSession } from './lib/supabase';
+import { orgService } from './lib/orgService';
 import { AuthPage } from './components/auth/AuthPage';
 import { Layout } from './components/layout/Layout';
+import { Onboarding } from './pages/Onboarding';
 import { Dashboard } from './pages/Dashboard';
 import { DailyReportsList } from './pages/DailyReportsList';
 import { WeeklyReport } from './pages/WeeklyReport';
@@ -36,16 +38,32 @@ import { VoiceCampaigns } from './pages/VoiceCampaigns';
 function App() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // null = unknown, true = org exists, false = needs onboarding
+  const [orgReady, setOrgReady] = useState<boolean | null>(null);
 
   useEffect(() => {
     // 1. Obtener la sesión de forma segura
     supabase.auth.getSession()
-      .then(({ data: { session }, error }) => {
-        if (error) console.error('[App:Auth] ❌ Error al obtener sesión inicial:', error);
+      .then(async ({ data: { session }, error }) => {
+        if (error) {
+          console.error('[App:Auth] ❌ Error al obtener sesión inicial:', error);
+          // Si el error indica sesión corrupta (ej: 500, oauth_client_id missing), limpiar
+          if (error.message?.includes('500') || error.message?.includes('oauth_client_id')) {
+            console.warn('[App:Auth] 🗑️ Sesión corrupta detectada al iniciar. Limpiando...');
+            clearCorruptedSession();
+          }
+        }
         setSession(session);
+        if (session) {
+          const org = await orgService.getOrg().catch(() => null);
+          setOrgReady(!!org);
+        }
       })
       .catch(err => {
         console.error('[App:Auth] 💥 Error fatal pidiendo sesión:', err);
+        if (err.message?.includes('500') || err.message?.includes('oauth_client_id')) {
+          clearCorruptedSession();
+        }
       })
       .finally(() => {
         setLoading(false); // Siempre quitar cargando, pase lo que pase
@@ -58,16 +76,27 @@ function App() {
       console.log(`[App:Auth] 🔑 Evento: ${event}`, newSession?.user?.email || 'Sin sesión');
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED') {
-        if (newSession) setSession(newSession);
+        if (newSession) {
+          setSession(newSession);
+          if (event === 'SIGNED_IN') {
+            orgService.invalidateCache();
+            orgService.getOrg().then(org => setOrgReady(!!org)).catch(() => setOrgReady(false));
+          }
+        }
       } else if (event === 'SIGNED_OUT') {
-        // SEGURIDAD ANTI-500 RELAJADA: Solo retener la memoria si EL TOKEN TODAVÍA EXISTE REALMENTE.
-        // Si Supabase lo borró (porque está corrupto o se cerró sesión intencionalmente), cedemos.
+        // Detectar si el logout es intencional o por sesión corrupta
         const token = localStorage.getItem('sb-rapilink-auth-token');
         if (!token) {
-          console.warn('[App:Auth] 🚪 Cierre de sesión confirmado (token no existe).');
+          // Token fue eliminado (sesión corrupta limpiada automáticamente o logout intencional)
+          console.warn('[App:Auth] 🚪 Sesión cerrada. Redirigiendo al login.');
           setSession(null);
+          setOrgReady(null);
         } else {
-          console.warn('[App:Auth] 🛡️ Ignorando SIGNED_OUT sospechoso. Token local aún sobrevive.');
+          // Token aún existe pero Supabase lo rechazó - probable sesión corrupta
+          console.warn('[App:Auth] ⚠️ Sesión rechazada aunque token existe. Puede estar corrupta. Limpiando...');
+          clearCorruptedSession();
+          setSession(null);
+          setOrgReady(null);
         }
       }
     });
@@ -86,8 +115,17 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={!session ? <AuthPage /> : <Navigate to="/" />} />
+        <Route path="/onboarding" element={
+          !session ? <Navigate to="/login" /> :
+          orgReady ? <Navigate to="/" /> :
+          <Onboarding />
+        } />
 
-        <Route element={session ? <Layout /> : <Navigate to="/login" />}>
+        <Route element={
+          !session ? <Navigate to="/login" /> :
+          orgReady === false ? <Navigate to="/onboarding" /> :
+          <Layout />
+        }>
           <Route path="/" element={<Dashboard />} />
 
           <Route path="/reportes/semanal" element={<WeeklyReport />} />

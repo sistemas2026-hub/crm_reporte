@@ -16,8 +16,16 @@ import {
     Loader2,
     Camera,
     Map as MapIcon,
-    Shield
+    Shield,
+    Navigation,
+    Key,
+    Wifi,
+    CheckCircle,
+    XCircle,
+    ExternalLink
 } from 'lucide-react';
+import { geoService } from '../lib/geoService';
+import { orgService } from '../lib/orgService';
 import { InstallationChecklistManager } from '../components/InstallationChecklistManager';
 import { NeighborhoodManager } from '../components/NeighborhoodManager';
 import { NAV_GROUPS } from '../config/menu';
@@ -110,6 +118,59 @@ export function Configuration() {
     const [editingAllowedMenus, setEditingAllowedMenus] = useState<string[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [isNeighborhoodManagerOpen, setIsNeighborhoodManagerOpen] = useState(false);
+
+    // Coordenadas de la oficina del técnico (para ordenamiento Haversine)
+    const [officeLat, setOfficeLat] = useState(() => {
+        const saved = geoService.getOfficeCoords();
+        return saved ? String(saved.lat) : '';
+    });
+    const [officeLng, setOfficeLng] = useState(() => {
+        const saved = geoService.getOfficeCoords();
+        return saved ? String(saved.lng) : '';
+    });
+    const [officeLabel, setOfficeLabel] = useState(() => {
+        return geoService.getOfficeCoords()?.label ?? '';
+    });
+    const [officeSaved, setOfficeSaved] = useState(false);
+
+    // API Credentials state (admin SaaS config)
+    const [apiWisphubUrl, setApiWisphubUrl] = useState('');
+    const [apiWisphubToken, setApiWisphubToken] = useState('');
+    const [apiSmartoltUrl, setApiSmartoltUrl] = useState('');
+    const [apiSmartoltToken, setApiSmartoltToken] = useState('');
+    const [apiSaving, setApiSaving] = useState(false);
+    const [apiSaved, setApiSaved] = useState(false);
+    const [wisphubVerifying, setWisphubVerifying] = useState(false);
+    const [wisphubVerifyResult, setWisphubVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
+    const [smartoltVerifying, setSmartoltVerifying] = useState(false);
+    const [smartoltVerifyResult, setSmartoltVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
+    const [companyName, setCompanyName] = useState('');
+
+    const handleSaveOfficeCoords = () => {
+        const lat = parseFloat(officeLat);
+        const lng = parseFloat(officeLng);
+        if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            alert('Coordenadas inválidas. Lat: -90 a 90 | Lng: -180 a 180');
+            return;
+        }
+        geoService.setOfficeCoords({ lat, lng, label: officeLabel.trim() || undefined });
+        setOfficeSaved(true);
+        setTimeout(() => setOfficeSaved(false), 2500);
+    };
+
+    const handleDetectOfficeLocation = () => {
+        if (!navigator.geolocation) {
+            alert('Tu dispositivo no soporta geolocalización.');
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setOfficeLat(String(pos.coords.latitude.toFixed(6)));
+                setOfficeLng(String(pos.coords.longitude.toFixed(6)));
+            },
+            () => alert('No se pudo obtener la ubicación. Verifica los permisos del navegador.')
+        );
+    };
 
     // MENU_OPTIONS removed in favor of NAV_GROUPS
 
@@ -233,6 +294,16 @@ export function Configuration() {
                 .from('profiles')
                 .select('*')
                 .order('full_name', { ascending: true });
+
+            // Load org API credentials for admins
+            const orgSettings = await orgService.getSettings();
+            if (orgSettings) {
+                setApiWisphubUrl(orgSettings.wisphub_url || '');
+                setApiWisphubToken(orgSettings.wisphub_token || '');
+                setApiSmartoltUrl(orgSettings.smartolt_url || '');
+                setApiSmartoltToken(orgSettings.smartolt_token || '');
+                setCompanyName(orgSettings.company_name || '');
+            }
 
             if (profiles && profiles.length > 0) {
                 // Asegurar que cada perfil tenga un email decente para mostrar
@@ -405,6 +476,40 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
         });
     };
 
+    const handleSaveApiCredentials = async () => {
+        setApiSaving(true);
+        try {
+            const { error } = await orgService.saveApiCredentials({
+                wisphub_url: apiWisphubUrl.trim(),
+                wisphub_token: apiWisphubToken.trim(),
+                smartolt_url: apiSmartoltUrl.trim() || undefined,
+                smartolt_token: apiSmartoltToken.trim() || undefined,
+                company_name: companyName.trim() || undefined,
+            });
+            if (error) { alert('Error al guardar: ' + error); return; }
+            setApiSaved(true);
+            setTimeout(() => setApiSaved(false), 2500);
+        } finally {
+            setApiSaving(false);
+        }
+    };
+
+    const handleVerifyWisphub = async () => {
+        setWisphubVerifying(true);
+        setWisphubVerifyResult(null);
+        const result = await orgService.verifyWisphub();
+        setWisphubVerifyResult(result);
+        setWisphubVerifying(false);
+    };
+
+    const handleVerifySmartOLT = async () => {
+        setSmartoltVerifying(true);
+        setSmartoltVerifyResult(null);
+        const result = await orgService.verifySmartOLT();
+        setSmartoltVerifyResult(result);
+        setSmartoltVerifying(false);
+    };
+
     const totalWeeklyGoal = config.weeklyGoals.reduce((sum, g) => sum + g.target, 0);
 
     const addPlan = () => {
@@ -472,7 +577,7 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
 
             {/* PROFILE TAB */}
             {activeTab === 'profile' && (
-                <div className="grid gap-8 md:grid-cols-2">
+                <div className="grid gap-8 md:grid-cols-2 items-start">
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
                         <h3 className="text-sm font-black flex items-center gap-2 uppercase text-slate-500 tracking-widest">
                             <UserPlus className="w-4 h-4 text-blue-600" /> Información Personal
@@ -545,12 +650,218 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                             </button>
                         </form>
                     </div>
+
+                    {/* Oficina del Técnico — coordenadas para ordenamiento Haversine en Mis Tareas */}
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5 md:col-span-2">
+                        <h3 className="text-sm font-black flex items-center gap-2 uppercase text-slate-500 tracking-widest">
+                            <Navigation className="w-4 h-4 text-blue-500" /> Ubicación de Oficina / Punto de Partida
+                        </h3>
+                        <p className="text-xs text-slate-400 font-medium">
+                            Define las coordenadas de tu oficina o punto de inicio. El sistema usará estos datos para ordenar tus tickets por proximidad geográfica (algoritmo Haversine).
+                        </p>
+
+                        <div className="grid md:grid-cols-3 gap-4">
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre / Etiqueta</label>
+                                <input
+                                    type="text"
+                                    value={officeLabel}
+                                    onChange={(e) => setOfficeLabel(e.target.value)}
+                                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none"
+                                    placeholder="Ej: Sede Principal"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Latitud</label>
+                                <input
+                                    type="number"
+                                    step="any"
+                                    value={officeLat}
+                                    onChange={(e) => setOfficeLat(e.target.value)}
+                                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none"
+                                    placeholder="Ej: 4.710989"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Longitud</label>
+                                <input
+                                    type="number"
+                                    step="any"
+                                    value={officeLng}
+                                    onChange={(e) => setOfficeLng(e.target.value)}
+                                    className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none"
+                                    placeholder="Ej: -74.072092"
+                                />
+                            </div>
+                        </div>
+
+                        {geoService.getOfficeCoords() && (
+                            <div className="p-3 bg-blue-50 rounded-xl border border-blue-100 text-[11px] font-bold text-blue-700 flex items-center gap-2">
+                                <Navigation size={12} />
+                                Punto guardado: {geoService.getOfficeCoords()?.label || 'Oficina'} — {geoService.getOfficeCoords()?.lat.toFixed(5)}, {geoService.getOfficeCoords()?.lng.toFixed(5)}
+                            </div>
+                        )}
+
+                        <div className="flex gap-3 flex-wrap">
+                            <button
+                                type="button"
+                                onClick={handleDetectOfficeLocation}
+                                className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs uppercase transition-all active:scale-95"
+                            >
+                                <Navigation size={14} /> Detectar mi ubicación actual
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSaveOfficeCoords}
+                                className={clsx(
+                                    "flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase transition-all active:scale-95 shadow-sm",
+                                    officeSaved
+                                        ? "bg-emerald-500 text-white"
+                                        : "bg-blue-900 hover:bg-blue-800 text-white"
+                                )}
+                            >
+                                <Save size={14} /> {officeSaved ? '¡Guardado!' : 'Guardar Coordenadas'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
 
             {/* SYSTEM TAB (ADMIN ONLY) */}
             {activeTab === 'system' && (
                 <div className="grid gap-8 md:grid-cols-2 items-start">
+
+                    {/* 0. API Credentials (SaaS — admin only) */}
+                    <div className="bg-white p-6 rounded-2xl border border-indigo-200 shadow-sm space-y-5 md:col-span-2">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-black flex items-center gap-2 uppercase text-slate-500 tracking-widest">
+                                <Key className="w-4 h-4 text-indigo-500" /> Credenciales API
+                            </h3>
+                            <span className="text-[10px] font-black bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full uppercase border border-indigo-200">Solo Admin</span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-medium">
+                            Configura las URLs y tokens de tus integraciones. Todos los usuarios del tenant usarán estas credenciales automáticamente.
+                        </p>
+
+                        {/* Company Name */}
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre de la Empresa</label>
+                            <input
+                                type="text"
+                                value={companyName}
+                                onChange={(e) => setCompanyName(e.target.value)}
+                                className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all outline-none"
+                                placeholder="Ej: Mi ISP S.A.S."
+                            />
+                        </div>
+
+                        {/* WispHub */}
+                        <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100 space-y-3">
+                            <div className="flex items-center gap-2">
+                                <Wifi className="w-4 h-4 text-blue-600" />
+                                <span className="text-xs font-black text-blue-700 uppercase tracking-wide">WispHub</span>
+                            </div>
+                            <div className="grid md:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">URL Base API</label>
+                                    <input
+                                        type="url"
+                                        value={apiWisphubUrl}
+                                        onChange={(e) => setApiWisphubUrl(e.target.value)}
+                                        className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-sm font-mono focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none"
+                                        placeholder="https://app.wisphub.net/api/"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Token</label>
+                                    <input
+                                        type="password"
+                                        value={apiWisphubToken}
+                                        onChange={(e) => setApiWisphubToken(e.target.value)}
+                                        className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-sm font-mono focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none"
+                                        placeholder="Token de API..."
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <button
+                                    type="button"
+                                    onClick={handleVerifyWisphub}
+                                    disabled={wisphubVerifying}
+                                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs uppercase transition-all active:scale-95 hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    {wisphubVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                                    Probar Conexión
+                                </button>
+                                {wisphubVerifyResult && (
+                                    <span className={`flex items-center gap-1.5 text-xs font-bold ${wisphubVerifyResult.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                                        {wisphubVerifyResult.ok ? <CheckCircle className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                                        {wisphubVerifyResult.message}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* SmartOLT */}
+                        <div className="p-4 bg-emerald-50/50 rounded-xl border border-emerald-100 space-y-3">
+                            <div className="flex items-center gap-2">
+                                <Wifi className="w-4 h-4 text-emerald-600" />
+                                <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">SmartOLT <span className="font-normal text-slate-400 normal-case">(opcional)</span></span>
+                            </div>
+                            <div className="grid md:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">URL Base API</label>
+                                    <input
+                                        type="url"
+                                        value={apiSmartoltUrl}
+                                        onChange={(e) => setApiSmartoltUrl(e.target.value)}
+                                        className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-sm font-mono focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all outline-none"
+                                        placeholder="https://smartolt.example.com/"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Token (X-Token)</label>
+                                    <input
+                                        type="password"
+                                        value={apiSmartoltToken}
+                                        onChange={(e) => setApiSmartoltToken(e.target.value)}
+                                        className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-sm font-mono focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all outline-none"
+                                        placeholder="Token de API..."
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <button
+                                    type="button"
+                                    onClick={handleVerifySmartOLT}
+                                    disabled={smartoltVerifying}
+                                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase transition-all active:scale-95 hover:bg-emerald-700 disabled:opacity-50"
+                                >
+                                    {smartoltVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                                    Probar Conexión
+                                </button>
+                                {smartoltVerifyResult && (
+                                    <span className={`flex items-center gap-1.5 text-xs font-bold ${smartoltVerifyResult.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                                        {smartoltVerifyResult.ok ? <CheckCircle className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                                        {smartoltVerifyResult.message}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={handleSaveApiCredentials}
+                            disabled={apiSaving}
+                            className={clsx(
+                                'flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase transition-all active:scale-95 shadow-sm',
+                                apiSaved ? 'bg-emerald-500 text-white' : 'bg-indigo-700 hover:bg-indigo-600 text-white disabled:opacity-50'
+                            )}
+                        >
+                            {apiSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                            {apiSaved ? '¡Credenciales Guardadas!' : 'Guardar Credenciales'}
+                        </button>
+                    </div>
 
                     {/* 1. Goals Section */}
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">

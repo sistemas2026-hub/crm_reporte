@@ -1,16 +1,38 @@
-import { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity, Navigation, Zap } from 'lucide-react';
 import { supabase, safeGetUser } from '../lib/supabase';
 import { WorkflowService, REQUIREMENTS } from '../lib/workflowService';
 import { WisphubService } from '../lib/wisphub';
+import { SmartOLTService } from '../lib/smartolt';
 import { convertToJpeg, type ImageMetadata } from '../lib/imageUtils';
 import { syncQueueService } from '../lib/syncQueueService';
 import { draftService } from '../lib/draftService';
+import { geoService } from '../lib/geoService';
+import { orgService } from '../lib/orgService';
 import { OperationsHeader } from '../components/operations/OperationsHeader';
-import { EditTicketModal } from '../components/operations/EditTicketModal'; // Restaurado
+import { EditTicketModal } from '../components/operations/EditTicketModal';
 import { MaterialSelector } from '../components/operations/MaterialSelector';
 import { canEditTicket, canEscalateTicket } from '../lib/permissions';
 import clsx from 'clsx';
+
+// Mapa de sugerencias de escalamiento por tipo de ticket
+const ESCALATION_ROUTES: Record<string, { hint: string; preferredLevel: number; color: string }> = {
+    'INSTALACION': { hint: 'Instalación → Supervisor Técnico', preferredLevel: 2, color: 'blue' },
+    'FIBRA': { hint: 'Falla de Fibra → Nivel 2 / Redes', preferredLevel: 2, color: 'orange' },
+    'SIN INTERNET': { hint: 'Sin Internet → Soporte Avanzado N2', preferredLevel: 2, color: 'red' },
+    'ROUTER': { hint: 'Falla de Router → Técnico de Equipos', preferredLevel: 1, color: 'yellow' },
+    'CABLE': { hint: 'Cableado → Técnico de Infraestructura', preferredLevel: 1, color: 'yellow' },
+    'FACTURACION': { hint: 'Facturación → Área Administrativa', preferredLevel: 3, color: 'purple' },
+    'SUSPENSION': { hint: 'Suspensión → Área Administrativa', preferredLevel: 3, color: 'purple' },
+};
+
+const getEscalationSuggestion = (asunto: string) => {
+    const upper = (asunto || '').toUpperCase();
+    for (const [key, val] of Object.entries(ESCALATION_ROUTES)) {
+        if (upper.includes(key)) return val;
+    }
+    return null;
+};
 const dispatchToast = (message: string, type: 'success' | 'error' | 'info' | 'loading', description?: string, id?: string) => {
     window.dispatchEvent(new CustomEvent('app:toast', {
         detail: { message, type, description, id, duration: type === 'loading' ? 0 : 4000 }
@@ -39,9 +61,13 @@ export function OperationsMyTasks() {
     });
     const [pendingSyncCount, setPendingSyncCount] = useState(0);
     const [userProfile, setUserProfile] = useState<any | null>(null); // RBAC State
+    const [companyName, setCompanyName] = useState<string>('ISP Reports');
     const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit Modal State
     const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
-    const [manualTicketId, setManualTicketId] = useState(''); // ID para búsqueda manual
+    const [manualTicketId, setManualTicketId] = useState('');
+    const [signalAutoFetching, setSignalAutoFetching] = useState(false);
+    const [signalAutoFailed, setSignalAutoFailed] = useState(false);
+    const smartoltRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // --- SISTEMA DE BORRADORES (IndexedDB) ---
     // 1. Guardar fotos automáticamente cuando cambian
@@ -71,6 +97,60 @@ export function OperationsMyTasks() {
         }
     }, [selectedTask]);
 
+    // 3. Auto-query SmartOLT al abrir modal de finalización (3 reintentos con backoff)
+    useEffect(() => {
+        if (actionType !== 'complete' || !selectedTask) return;
+
+        // Limpiar retries anteriores
+        if (smartoltRetryRef.current) clearTimeout(smartoltRetryRef.current);
+        setSignalAutoFetching(false);
+        setSignalAutoFailed(false);
+        setSignal('');
+
+        const meta = selectedTask.workflow_activities?.workflow_processes?.metadata || {};
+        const sn: string = meta.sn_onu || meta.onu_serial || meta.serial_onu || meta.serial || meta.sn || meta.numero_serie || '';
+
+        if (!sn) {
+            setSignalAutoFailed(true);
+            return;
+        }
+
+        let attempt = 0;
+        const MAX_ATTEMPTS = 3;
+
+        const query = async () => {
+            setSignalAutoFetching(true);
+            try {
+                const result = await SmartOLTService.getOnuSignal(sn);
+                if (result?.rx !== null && result?.rx !== undefined) {
+                    setSignal(String(result.rx));
+                    setSignalAutoFailed(false);
+                    console.log(`[SmartOLT] Señal obtenida automáticamente: ${result.rx} dBm`);
+                } else {
+                    throw new Error('No signal data');
+                }
+            } catch {
+                attempt++;
+                if (attempt < MAX_ATTEMPTS) {
+                    const delay = 2000 * attempt;
+                    console.warn(`[SmartOLT] Intento ${attempt}/${MAX_ATTEMPTS} fallido, reintentando en ${delay}ms...`);
+                    smartoltRetryRef.current = setTimeout(query, delay);
+                } else {
+                    console.warn('[SmartOLT] Todos los intentos fallaron. Habilitando entrada manual con excepción.');
+                    setSignalAutoFailed(true);
+                }
+            } finally {
+                setSignalAutoFetching(false);
+            }
+        };
+
+        query();
+
+        return () => {
+            if (smartoltRetryRef.current) clearTimeout(smartoltRetryRef.current);
+        };
+    }, [actionType, selectedTask]);
+
     const toggleTicketExpansion = (id: string) => {
         const newSet = new Set(expandedTickets);
         if (newSet.has(id)) newSet.delete(id);
@@ -91,6 +171,9 @@ export function OperationsMyTasks() {
                 console.warn('[MyTasks-Trace] ❌ No hay usuario autenticado o error en auth. Cancelando.');
                 return;
             }
+
+            // Inicializar encriptación de borradores con la clave del técnico
+            await draftService.init(user.id);
 
             console.log(`[MyTasks-Trace] 2. Auth User ID: ${user.id} | Email: ${user.email}`);
 
@@ -154,39 +237,64 @@ export function OperationsMyTasks() {
 
             console.log(`[MyTasks-Trace] 5. Query OK. Tickets devueltos por BD: ${data?.length || 0}`);
 
-            // === Lógica de Ordenamiento Inteligente (Prioridad > Atrasados > Barrio > Fecha) ===
+            // === Ordenamiento Inteligente: Prioridad > Sin Internet > Atrasados > Proximidad/Barrio > Fecha ===
+            const officeCoords = geoService.getOfficeCoords();
+
             const sortedData = [...(data || [])].sort((a, b) => {
+                const getMeta = (t: any) => t.workflow_activities?.workflow_processes?.metadata || {};
+
                 const getPrio = (t: any) => {
-                    const p = t.workflow_activities?.workflow_processes?.metadata?.prioridad || 'Normal';
+                    const p = getMeta(t).prioridad || 'Normal';
                     const map: Record<string, number> = { 'Muy Alta': 4, 'Alta': 3, 'Normal': 2, 'Media': 2, 'Baja': 1 };
                     return map[p] || 2;
                 };
 
+                const isSinInternet = (t: any) =>
+                    (getMeta(t).asunto || '').toUpperCase().includes('SIN INTERNET');
+
                 const isDelayed = (t: any) => {
-                    const dt = new Date(t.workflow_activities?.workflow_processes?.metadata?.fecha_creacion || t.created_at);
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
+                    const dt = new Date(getMeta(t).fecha_creacion || t.created_at);
+                    const today = new Date(); today.setHours(0, 0, 0, 0);
                     return dt < today;
                 };
 
-                const getBarrio = (t: any) => (t.workflow_activities?.workflow_processes?.metadata?.barrio || 'Sin Barrio').toLowerCase().trim();
-                const getDate = (t: any) => new Date(t.workflow_activities?.workflow_processes?.metadata?.fecha_creacion || t.created_at).getTime();
+                const getDistanceKm = (t: any): number => {
+                    if (!officeCoords) return 0;
+                    const lat = parseFloat(getMeta(t).latitud || getMeta(t).lat || '0');
+                    const lng = parseFloat(getMeta(t).longitud || getMeta(t).lng || getMeta(t).lon || '0');
+                    if (!lat && !lng) return 999; // Sin coordenadas va al final
+                    return geoService.haversineKm(officeCoords, { lat, lng });
+                };
 
-                // 1. Prioridad: Alta primero
+                const getBarrio = (t: any) => (getMeta(t).barrio || 'ZZZ').toLowerCase().trim();
+                const getDate = (t: any) => new Date(getMeta(t).fecha_creacion || t.created_at).getTime();
+
+                // 1. Prioridad numérica (4 > 1)
                 const pA = getPrio(a); const pB = getPrio(b);
                 if (pA !== pB) return pB - pA;
 
-                // 2. Atrasado: Los de ayer/antes van primero
+                // 2. "Sin Internet" tiene precedencia explícita
+                const siA = isSinInternet(a); const siB = isSinInternet(b);
+                if (siA && !siB) return -1;
+                if (!siA && siB) return 1;
+
+                // 3. Atrasados van antes que los de hoy
                 const dA = isDelayed(a); const dB = isDelayed(b);
                 if (dA && !dB) return -1;
                 if (!dA && dB) return 1;
 
-                // 3. Barrio: Agrupar por zona (orden alfabético para juntarlos)
+                // 4a. Si hay coordenadas de oficina: ordenar por proximidad Haversine
+                if (officeCoords) {
+                    const distA = getDistanceKm(a); const distB = getDistanceKm(b);
+                    if (Math.abs(distA - distB) > 0.2) return distA - distB; // Diferencia > 200m
+                }
+
+                // 4b. Sin coordenadas: agrupar por barrio (orden alfabético)
                 const barA = getBarrio(a); const barB = getBarrio(b);
                 if (barA < barB) return -1;
                 if (barA > barB) return 1;
 
-                // 4. Antigüedad: El más viejo dentro del mismo barrio va primero
+                // 5. Antigüedad: el más viejo primero
                 return getDate(a) - getDate(b);
             });
 
@@ -199,6 +307,7 @@ export function OperationsMyTasks() {
                 const { data: fullProfile } = await supabase.from('profiles').select('*').eq('id', finalProfile.id).maybeSingle();
                 if (fullProfile) setUserProfile(fullProfile);
             }
+            orgService.getCompanyName().then(name => setCompanyName(name));
 
         } catch (error) {
             console.error('[MyTasks-Trace] ❌ Error general en loadMyTasks:', error);
@@ -828,16 +937,35 @@ export function OperationsMyTasks() {
                                         </div>
                                         <div className="space-y-2">
                                             <label className="text-[11px] font-black text-zinc-800 uppercase flex items-center gap-2 tracking-widest">
-                                                <Play size={14} className="text-zinc-400 rotate-90" />
+                                                <Activity size={14} className={clsx(signalAutoFetching ? "text-blue-400 animate-pulse" : signalAutoFailed ? "text-orange-400" : "text-emerald-500")} />
                                                 Potencia (dBm)
                                             </label>
-                                            <input
-                                                type="text"
-                                                placeholder="-22.5"
-                                                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2 text-xs font-bold outline-none focus:bg-white focus:border-zinc-900 transition-all text-zinc-700"
-                                                value={signal}
-                                                onChange={(e) => setSignal(e.target.value)}
-                                            />
+                                            <div className="relative">
+                                                <input
+                                                    type="text"
+                                                    placeholder={signalAutoFetching ? "Consultando SmartOLT..." : "-22.5"}
+                                                    disabled={signalAutoFetching}
+                                                    className={clsx(
+                                                        "w-full border rounded-xl px-4 py-2 text-xs font-bold outline-none transition-all",
+                                                        signalAutoFetching && "bg-blue-50 border-blue-200 text-blue-400 cursor-wait",
+                                                        !signalAutoFetching && signal && "bg-emerald-50 border-emerald-200 text-emerald-700",
+                                                        !signalAutoFetching && !signal && "bg-zinc-50 border-zinc-200 text-zinc-700 focus:bg-white focus:border-zinc-900"
+                                                    )}
+                                                    value={signal}
+                                                    onChange={(e) => setSignal(e.target.value)}
+                                                />
+                                                {signalAutoFetching && (
+                                                    <RefreshCw size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-400 animate-spin" />
+                                                )}
+                                                {!signalAutoFetching && signal && (
+                                                    <Zap size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500" />
+                                                )}
+                                            </div>
+                                            {signalAutoFailed && (
+                                                <p className="text-[9px] font-bold text-orange-500 uppercase flex items-center gap-1">
+                                                    <AlertTriangle size={9} /> SmartOLT sin respuesta — ingreso manual bajo excepción
+                                                </p>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -906,6 +1034,26 @@ export function OperationsMyTasks() {
                             </div>
 
                             {actionType === 'escalate' && (
+                                <div className="space-y-4">
+                                {/* Sugerencia automática basada en tipo de ticket */}
+                                {(() => {
+                                    const asunto = selectedTask?.workflow_activities?.workflow_processes?.metadata?.asunto || '';
+                                    const suggestion = getEscalationSuggestion(asunto);
+                                    if (!suggestion) return null;
+                                    const colorMap: Record<string, string> = {
+                                        blue: 'bg-blue-50 border-blue-200 text-blue-700',
+                                        orange: 'bg-orange-50 border-orange-200 text-orange-700',
+                                        red: 'bg-red-50 border-red-200 text-red-700',
+                                        yellow: 'bg-yellow-50 border-yellow-200 text-yellow-700',
+                                        purple: 'bg-purple-50 border-purple-200 text-purple-700',
+                                    };
+                                    return (
+                                        <div className={clsx("p-3 rounded-xl border text-[10px] font-black uppercase flex items-center gap-2", colorMap[suggestion.color] || colorMap.blue)}>
+                                            <Navigation size={12} />
+                                            <span>Sugerido: {suggestion.hint}</span>
+                                        </div>
+                                    );
+                                })()}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2">
                                         <label className="text-[11px] font-black text-zinc-800 uppercase tracking-widest">Prioridad</label>
@@ -947,6 +1095,7 @@ export function OperationsMyTasks() {
                                         </select>
                                     </div>
                                 </div>
+                                </div>
                             )}
 
                             <button
@@ -961,6 +1110,16 @@ export function OperationsMyTasks() {
                                         }
                                         if (evidenceFiles.length < req.minPhotos) return true;
                                         if (req.requiresMaterials && Object.keys(selectedMaterials).length === 0) return true;
+                                        // Bloquear si alguna cantidad supera el stock disponible
+                                        const hasOverflow = Object.entries(selectedMaterials).some(([assetId, qty]) => {
+                                            const asset = technicianStock.find((a: any) => a.id === assetId);
+                                            if (!asset) return false;
+                                            const available = asset.inventory_items?.is_serialized
+                                                ? 1
+                                                : (asset.quantity ?? asset.current_quantity ?? 1);
+                                            return qty > available;
+                                        });
+                                        if (hasOverflow) return true;
                                     }
                                     return false;
                                 })()}
@@ -1000,7 +1159,7 @@ export function OperationsMyTasks() {
                                                     }
 
                                                     const watermarkMeta: ImageMetadata = {
-                                                        company: 'RAPILINK SAS',
+                                                        company: companyName,
                                                         technician: userProfile?.full_name || 'TÉCNICO',
                                                         location,
                                                         timestamp: new Date().toLocaleString()
@@ -1012,7 +1171,8 @@ export function OperationsMyTasks() {
                                                             processedFiles.push(jpegBlob);
                                                         } catch (err) {
                                                             console.error("Error convirtiendo imagen:", err);
-                                                            processedFiles.push(file); // Fallback al original si falla
+                                                            // No se sube la imagen si falla la conversión — el spec prohíbe subir la original
+                                                            dispatchToast("Error en foto", "error", `No se pudo procesar una imagen. Reintente.`, "img-err");
                                                         }
                                                     }
                                                     dispatchToast("Fotos listas ✅", "success", "Imágenes con marca de agua y optimizadas", "image-proc");
@@ -1122,6 +1282,14 @@ export function OperationsMyTasks() {
 
                                             if (evidenceFiles.length < req.minPhotos) return `Faltan Fotos (${evidenceFiles.length}/${req.minPhotos})`;
                                             if (req.requiresMaterials && Object.keys(selectedMaterials).length === 0) return 'Reportar Materiales';
+
+                                            const overflowAsset = Object.entries(selectedMaterials).find(([assetId, qty]) => {
+                                                const asset = technicianStock.find((a: any) => a.id === assetId);
+                                                if (!asset) return false;
+                                                const available = asset.inventory_items?.is_serialized ? 1 : (asset.quantity ?? asset.current_quantity ?? 1);
+                                                return qty > available;
+                                            });
+                                            if (overflowAsset) return 'Stock Insuficiente';
 
                                             return 'Finalizar Tarea';
                                         })()}

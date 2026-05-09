@@ -54,6 +54,7 @@ export function AuthPage() {
                         <label className="block text-sm font-medium mb-1">Email</label>
                         <input
                             type="email"
+                            autoComplete="email"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full px-3 py-2 bg-background border border-input rounded focus:ring-2 focus:ring-ring focus:outline-none disabled:opacity-50"
@@ -65,6 +66,7 @@ export function AuthPage() {
                         <label className="block text-sm font-medium mb-1">Contraseña</label>
                         <input
                             type="password"
+                            autoComplete="current-password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full px-3 py-2 bg-background border border-input rounded focus:ring-2 focus:ring-ring focus:outline-none disabled:opacity-50"

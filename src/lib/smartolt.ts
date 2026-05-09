@@ -1,3 +1,5 @@
+import { orgService } from './orgService';
+
 export interface SmartOLTOnuStatus {
     id: number;
     sn: string;
@@ -7,6 +9,21 @@ export interface SmartOLTOnuStatus {
     olt_name: string;
     pon_port: string;
     last_online_change: string;
+}
+
+// Helper interno: fetch a SmartOLT via Edge Function con JWT del tenant
+async function smartoltFetch(path: string, options?: RequestInit): Promise<Response> {
+    const baseUrl = orgService.getSmartOLTProxyUrl();
+    const authHeader = await orgService.getAuthHeader();
+    return fetch(`${baseUrl}/${path}`, {
+        ...options,
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            ...(authHeader ? { 'Authorization': authHeader } : {}),
+            ...(options?.headers || {}),
+        },
+    });
 }
 
 export const SmartOLTService = {
@@ -21,7 +38,7 @@ export const SmartOLTService = {
             if (!cleanSn) return null;
 
             // Endpoint plural confirmado mediante diagnóstico
-            const response = await fetch(`/api/smartolt/onu/get_onus_details_by_sn/${cleanSn}`);
+            const response = await smartoltFetch(`onu/get_onus_details_by_sn/${cleanSn}`);
 
             if (!response.ok) {
                 if (response.status === 404) return null;
@@ -61,7 +78,7 @@ export const SmartOLTService = {
 
             if (status && status.id) {
                 // Es un equipo activo, podemos pedir señal en tiempo real
-                const response = await fetch(`/api/smartolt/onu/get_onu_signal/${status.id}`);
+                const response = await smartoltFetch(`onu/get_onu_signal/${status.id}`);
                 if (!response.ok) return { rx: status.signal_dbm || null, tx: null };
 
                 const data = await response.json();
@@ -107,7 +124,7 @@ export const SmartOLTService = {
      */
     async getUnconfiguredOnus(): Promise<Array<{ sn: string; mac: string; olt_name?: string; pon_port?: string }>> {
         try {
-            const response = await fetch('/api/smartolt/onu/unconfigured_onus');
+            const response = await smartoltFetch('onu/unconfigured_onus');
 
             if (!response.ok) {
                 console.warn('[SmartOLT] No se pudieron obtener ONUs no configuradas');
@@ -158,9 +175,8 @@ export const SmartOLTService = {
         vlan?: number;
     }): Promise<{ status: boolean; message?: string; error?: string }> {
         try {
-            const response = await fetch('/api/smartolt/onu/authorize_onu', {
+            const response = await smartoltFetch('onu/authorize_onu', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
 

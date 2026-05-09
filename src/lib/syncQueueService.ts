@@ -96,7 +96,14 @@ class SyncQueueService {
 
         console.log(`[SyncQueue] Procesando ${queue.length} tareas pendientes...`);
 
-        for (const sync of queue) {
+        // Fotos tienen prioridad de ancho de banda: items con archivos van primero
+        const sorted = [...queue].sort((a, b) => {
+            const aHasFiles = (a.data.files?.length ?? 0) > 0 ? 0 : 1;
+            const bHasFiles = (b.data.files?.length ?? 0) > 0 ? 0 : 1;
+            return aHasFiles - bHasFiles;
+        });
+
+        for (const sync of sorted) {
             try {
                 let success = false;
                 if (sync.type === 'COMPLETE') {

@@ -1,4 +1,5 @@
 import { supabase, safeGetUser } from './supabase';
+import { orgService } from './orgService';
 
 export interface WispHubClient {
     id_servicio: number;
@@ -35,7 +36,9 @@ export interface WispHubStaff {
     nivel: string;
 }
 
-const BASE_URL = '/api/wisphub';
+// En SaaS: cada tenant tiene su propia URL de WispHub, enrutada via Edge Function.
+// La Edge Function lee las credenciales del tenant desde organization_settings.
+const BASE_URL = orgService.getWispHubProxyUrl();
 
 export const TICKET_SUBJECTS = [
     "Internet Lento", "No Tiene Internet", "No Responde El Router Wifi", "Router Wifi Reseteado(Valores De Fabrica)",
@@ -83,12 +86,16 @@ export function toProxyUrl(url: string | null): string | null {
 
 export async function safeFetch(url: string, options: RequestInit = {}, retries = 2, silent = false): Promise<Response> {
     const proxyUrl = toProxyUrl(url) || url;
+    // Obtener JWT para autenticar la Edge Function (identifica al tenant)
+    const authHeader = await orgService.getAuthHeader();
+
     for (let i = 0; i <= retries; i++) {
         try {
             const finalOptions: RequestInit = {
                 ...options,
                 headers: {
                     'Accept': 'application/json',
+                    ...(authHeader ? { 'Authorization': authHeader } : {}),
                     ...(options.headers || {})
                 }
             };
