@@ -22,7 +22,9 @@ import {
     Wifi,
     CheckCircle,
     XCircle,
-    ExternalLink
+    ExternalLink,
+    Clock,
+    AlertTriangle
 } from 'lucide-react';
 import { geoService } from '../lib/geoService';
 import { orgService } from '../lib/orgService';
@@ -145,6 +147,20 @@ export function Configuration() {
     const [smartoltVerifying, setSmartoltVerifying] = useState(false);
     const [smartoltVerifyResult, setSmartoltVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
     const [companyName, setCompanyName] = useState('');
+
+    // SLA Config state
+    interface SlaRow { id?: string; ticket_type: string; max_hours: number; threshold_pct: number; color: string; }
+    const DEFAULT_SLA_ROWS: SlaRow[] = [
+        { ticket_type: 'INSTALACION', max_hours: 48, threshold_pct: 80, color: 'blue' },
+        { ticket_type: 'REPARACION', max_hours: 24, threshold_pct: 80, color: 'orange' },
+        { ticket_type: 'FALLA', max_hours: 8, threshold_pct: 80, color: 'red' },
+        { ticket_type: 'CORTE', max_hours: 4, threshold_pct: 80, color: 'red' },
+        { ticket_type: 'SUSPENSION', max_hours: 72, threshold_pct: 80, color: 'purple' },
+        { ticket_type: 'ADMINISTRATIVO', max_hours: 72, threshold_pct: 80, color: 'slate' },
+    ];
+    const [slaRows, setSlaRows] = useState<SlaRow[]>(DEFAULT_SLA_ROWS);
+    const [slaSaving, setSlaSaving] = useState(false);
+    const [slaSaved, setSlaSaved] = useState(false);
 
     const handleSaveOfficeCoords = () => {
         const lat = parseFloat(officeLat);
@@ -303,6 +319,14 @@ export function Configuration() {
                 setApiSmartoltUrl(orgSettings.smartolt_url || '');
                 setApiSmartoltToken(orgSettings.smartolt_token || '');
                 setCompanyName(orgSettings.company_name || '');
+
+                // Load SLA config
+                const { data: slaData } = await supabase
+                    .from('sla_config')
+                    .select('*')
+                    .eq('org_id', orgSettings.org_id)
+                    .order('max_hours', { ascending: true });
+                if (slaData && slaData.length > 0) setSlaRows(slaData);
             }
 
             if (profiles && profiles.length > 0) {
@@ -508,6 +532,25 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
         const result = await orgService.verifySmartOLT();
         setSmartoltVerifyResult(result);
         setSmartoltVerifying(false);
+    };
+
+    const handleSaveSla = async () => {
+        const orgSettings = await orgService.getSettings();
+        if (!orgSettings?.org_id) return;
+        setSlaSaving(true);
+        try {
+            const rows = slaRows.map(r => ({ ...r, org_id: orgSettings.org_id }));
+            const { error } = await supabase
+                .from('sla_config')
+                .upsert(rows, { onConflict: 'org_id,ticket_type' });
+            if (error) throw error;
+            setSlaSaved(true);
+            setTimeout(() => setSlaSaved(false), 2500);
+        } catch (e: any) {
+            alert('Error al guardar SLA: ' + e.message);
+        } finally {
+            setSlaSaving(false);
+        }
     };
 
     const totalWeeklyGoal = config.weeklyGoals.reduce((sum, g) => sum + g.target, 0);
@@ -1050,6 +1093,118 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                         isOpen={isNeighborhoodManagerOpen}
                         onClose={() => setIsNeighborhoodManagerOpen(false)}
                     />
+
+                    {/* SLA Config Section */}
+                    <div className="bg-white p-6 rounded-2xl border border-amber-200 shadow-sm space-y-5 md:col-span-2">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                            <h3 className="text-sm font-black flex items-center gap-2 uppercase text-slate-500 tracking-widest">
+                                <Clock className="w-4 h-4 text-amber-500" /> Ajustes de SLA por Tipo de Ticket
+                            </h3>
+                            <span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-full uppercase border border-amber-200">Solo Admin</span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-medium">
+                            Define el tiempo máximo de atención y el umbral de alerta preventiva para cada tipo de ticket. La consola de supervisión usará estos valores para los semáforos de SLA.
+                        </p>
+
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                                <thead>
+                                    <tr className="border-b border-slate-100">
+                                        <th className="text-left py-2 px-3 font-black text-[10px] uppercase text-slate-400 tracking-wider">Tipo de Ticket</th>
+                                        <th className="text-center py-2 px-3 font-black text-[10px] uppercase text-slate-400 tracking-wider">Tiempo Máximo (horas)</th>
+                                        <th className="text-center py-2 px-3 font-black text-[10px] uppercase text-slate-400 tracking-wider">Alerta Preventiva (%)</th>
+                                        <th className="text-center py-2 px-3 font-black text-[10px] uppercase text-slate-400 tracking-wider">Color</th>
+                                        <th className="py-2 px-3"></th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                    {slaRows.map((row, i) => (
+                                        <tr key={i} className="hover:bg-slate-50/50 transition-colors">
+                                            <td className="py-2 px-3">
+                                                <input
+                                                    type="text"
+                                                    value={row.ticket_type}
+                                                    onChange={e => setSlaRows(prev => prev.map((r, j) => j === i ? { ...r, ticket_type: e.target.value.toUpperCase() } : r))}
+                                                    className="w-full p-1.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-slate-800 uppercase focus:ring-2 focus:ring-amber-500/10 focus:border-amber-400 outline-none"
+                                                />
+                                            </td>
+                                            <td className="py-2 px-3">
+                                                <input
+                                                    type="number"
+                                                    min={1}
+                                                    value={row.max_hours}
+                                                    onChange={e => setSlaRows(prev => prev.map((r, j) => j === i ? { ...r, max_hours: Number(e.target.value) } : r))}
+                                                    className="w-full p-1.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-center text-slate-800 focus:ring-2 focus:ring-amber-500/10 focus:border-amber-400 outline-none"
+                                                />
+                                            </td>
+                                            <td className="py-2 px-3">
+                                                <div className="flex items-center gap-2">
+                                                    <input
+                                                        type="number"
+                                                        min={10}
+                                                        max={100}
+                                                        value={row.threshold_pct}
+                                                        onChange={e => setSlaRows(prev => prev.map((r, j) => j === i ? { ...r, threshold_pct: Number(e.target.value) } : r))}
+                                                        className="w-full p-1.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-center text-slate-800 focus:ring-2 focus:ring-amber-500/10 focus:border-amber-400 outline-none"
+                                                    />
+                                                    <span className="text-slate-400 shrink-0">%</span>
+                                                </div>
+                                            </td>
+                                            <td className="py-2 px-3">
+                                                <select
+                                                    value={row.color}
+                                                    onChange={e => setSlaRows(prev => prev.map((r, j) => j === i ? { ...r, color: e.target.value } : r))}
+                                                    className="w-full p-1.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-slate-800 focus:ring-2 focus:ring-amber-500/10 focus:border-amber-400 outline-none cursor-pointer"
+                                                >
+                                                    <option value="blue">Azul</option>
+                                                    <option value="orange">Naranja</option>
+                                                    <option value="red">Rojo</option>
+                                                    <option value="purple">Morado</option>
+                                                    <option value="slate">Gris</option>
+                                                </select>
+                                            </td>
+                                            <td className="py-2 px-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSlaRows(prev => prev.filter((_, j) => j !== i))}
+                                                    className="text-slate-300 hover:text-red-500 transition-colors"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <button
+                                type="button"
+                                onClick={() => setSlaRows(prev => [...prev, { ticket_type: 'NUEVO TIPO', max_hours: 24, threshold_pct: 80, color: 'blue' }])}
+                                className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs uppercase transition-all active:scale-95"
+                            >
+                                <Plus className="w-3.5 h-3.5" /> Agregar tipo
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSaveSla}
+                                disabled={slaSaving}
+                                className={clsx(
+                                    'flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-xs uppercase transition-all active:scale-95 shadow-sm',
+                                    slaSaved ? 'bg-emerald-500 text-white' : 'bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50'
+                                )}
+                            >
+                                {slaSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                {slaSaved ? '¡SLA Guardado!' : 'Guardar SLA'}
+                            </button>
+                        </div>
+
+                        <div className="flex items-start gap-2 p-3 bg-amber-50 rounded-xl border border-amber-100 text-[11px] text-amber-700 font-medium">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                            <span>Los semáforos en Supervisión se calcularán desde la fecha de creación del ticket. Umbral = alerta amarilla. 100% = alerta roja parpadeante.</span>
+                        </div>
+                    </div>
 
                     {/* 4. User Management Section (Admin Only) */}
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6 md:col-span-2">
