@@ -96,7 +96,8 @@ export const orgService = {
             const authHeader = await this.getAuthHeader();
             if (!authHeader) return { ok: false, message: 'Sin sesión' };
 
-            const res = await fetch(`${this.getWispHubProxyUrl()}/clientes/?page_size=1`, {
+            const baseUrl = import.meta.env.DEV ? '/api/wisphub' : this.getWispHubProxyUrl();
+            const res = await fetch(`${baseUrl}/clientes/?page_size=1`, {
                 headers: { Authorization: authHeader }
             });
 
@@ -124,7 +125,8 @@ export const orgService = {
             const authHeader = await this.getAuthHeader();
             if (!authHeader) return { ok: false, message: 'Sin sesión' };
 
-            const res = await fetch(`${this.getSmartOLTProxyUrl()}/onu/unconfigured_onus`, {
+            const baseUrl = import.meta.env.DEV ? '/api/smartolt' : this.getSmartOLTProxyUrl();
+            const res = await fetch(`${baseUrl}/onu/unconfigured_onus`, {
                 headers: { Authorization: authHeader }
             });
 
