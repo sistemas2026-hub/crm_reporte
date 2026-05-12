@@ -11,9 +11,9 @@ export interface SmartOLTOnuStatus {
     last_online_change: string;
 }
 
-// Helper interno: fetch a SmartOLT via Edge Function con JWT del tenant
+// Helper interno: fetch a SmartOLT via Edge Function (prod) o Vite proxy (dev)
 async function smartoltFetch(path: string, options?: RequestInit): Promise<Response> {
-    const baseUrl = orgService.getSmartOLTProxyUrl();
+    const baseUrl = import.meta.env.DEV ? '/api/smartolt' : orgService.getSmartOLTProxyUrl();
     const authHeader = await orgService.getAuthHeader();
     return fetch(`${baseUrl}/${path}`, {
         ...options,

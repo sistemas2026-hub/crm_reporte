@@ -36,9 +36,11 @@ export interface WispHubStaff {
     nivel: string;
 }
 
-// En SaaS: cada tenant tiene su propia URL de WispHub, enrutada via Edge Function.
-// La Edge Function lee las credenciales del tenant desde organization_settings.
-const BASE_URL = orgService.getWispHubProxyUrl();
+// En desarrollo: usa el proxy de Vite (vite.config.ts → /api/wisphub → api.wisphub.io)
+// En producción: usa la Edge Function (lee credenciales del tenant desde organization_settings)
+const BASE_URL = import.meta.env.DEV
+    ? '/api/wisphub'
+    : orgService.getWispHubProxyUrl();
 
 export const TICKET_SUBJECTS = [
     "Internet Lento", "No Tiene Internet", "No Responde El Router Wifi", "Router Wifi Reseteado(Valores De Fabrica)",
