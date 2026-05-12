@@ -267,10 +267,17 @@ export function OperationsMyTasks() {
                     .or(nameConditions.join(','))
                     .order('created_at', { ascending: false });
 
-                // Solo procesos que tienen algún workitem PE (activo) o sin workitems (recién sincronizados)
+                // Solo procesos con workitem PE activo — excluye si el usuario ya escaló/completó
                 const relevant = (procs || []).filter(proc => {
                     const wis = (proc.workflow_activities || []).flatMap((a: any) => a.workflow_workitems || []);
-                    return wis.length === 0 || wis.some((wi: any) => wi.status === 'PE');
+                    if (wis.length === 0) return true;
+                    // Si el usuario tiene workitem terminal (SS=escalado, CO=completado, ST=timeout), excluir
+                    const myTerminal = wis.find((wi: any) =>
+                        wi.participant_id === participantId &&
+                        (wi.status === 'SS' || wi.status === 'CO' || wi.status === 'ST')
+                    );
+                    if (myTerminal) return false;
+                    return wis.some((wi: any) => wi.status === 'PE');
                 });
 
                 // Deduplicar contra Consulta 1 (evitar mostrar el mismo ticket dos veces)
@@ -1419,6 +1426,19 @@ export function OperationsMyTasks() {
                                         }
 
                                         if (success) {
+                                            if (actionType === 'escalate') {
+                                                // Remoción instantánea del estado local
+                                                setMyTasks(prev => prev.filter(t => t.id !== selectedTask.id));
+                                                // Notificar a Supervisión para que refresque conteos
+                                                window.dispatchEvent(new CustomEvent('supervision:processes-updated', {
+                                                    detail: { ticketId, workItemId: selectedTask.id }
+                                                }));
+                                                dispatchToast(
+                                                    'Ticket escalado y removido de tu lista',
+                                                    'success',
+                                                    `Ticket #${ticketId} transferido al siguiente nivel.`
+                                                );
+                                            }
                                             setSelectedTask(null);
                                             setComment('');
                                             setSelectedMaterials({});

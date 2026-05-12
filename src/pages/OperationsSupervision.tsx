@@ -193,6 +193,17 @@ export function OperationsSupervision() {
         return () => window.removeEventListener('supervision:users-updated', handleUsersUpdated);
     }, [reloadPlatformUsers]);
 
+    // ── Escuchar escalamientos desde MyTasks para refrescar procesos/conteos
+    useEffect(() => {
+        const handleProcessesUpdated = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            console.log(`[Supervision] 🔄 Recibido supervision:processes-updated — ticket #${detail?.ticketId} escalado. Recargando procesos...`);
+            loadPage();
+        };
+        window.addEventListener('supervision:processes-updated', handleProcessesUpdated);
+        return () => window.removeEventListener('supervision:processes-updated', handleProcessesUpdated);
+    }, [loadPage]);
+
     const loadPage = useCallback(async () => {
         setLoading(true);
         try {
