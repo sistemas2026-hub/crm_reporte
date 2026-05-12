@@ -715,9 +715,20 @@ export function OperationsMyTasks() {
             }
         }, 15000); // Cada 15 segs
 
+        // Polling WispHub: detecta tickets nuevos asignados desde WispHub sin recargar
+        const wisphubPollInterval = setInterval(async () => {
+            if (!navigator.onLine || !isMounted) return;
+            try {
+                await WorkflowService.syncMyTickets();
+            } catch {
+                // silencioso — no interrumpir al técnico si falla
+            }
+        }, 90000); // Cada 90 segundos (~1.5 min)
+
         return () => {
             isMounted = false;
             clearInterval(interval);
+            clearInterval(wisphubPollInterval);
             if (subscription) {
                 console.log('[MyTasks:Realtime] 🔌 Apagando radio/desconectando WebSockets al desmontar.');
                 supabase.removeChannel(subscription);
