@@ -508,3 +508,79 @@ export const categorizeTicket = (subject: string): TicketCategory => {
 
 ### Notas sobre Errores Tipográficos del Catálogo Origen
 Adicionalmente, se confirmó que el catálogo original de WispHub del ISP contiene y envía errores de tipeo en las opciones por defecto (ej. `"INSTATALACION NUEVA"` en lugar de Instalación). **Regla de oro**: El código local debe mapear y empatar exactamente esos errores de tipeo en los arrays de constantes si desea capturar correctamente los tickets históricos y presentes hasta que se corrija en el origen.
+
+## 13. Arquitectura del Proxy: Dev vs Producción
+
+> [!CRITICAL]
+> **Fecha**: 2026-05-12
+> **Contexto**: Resolución de error 404 HTML al sincronizar tickets desde Mis Tareas en entorno local.
+
+### El Problema: BASE_URL apuntaba al Edge Function en local
+
+Al migrar de Vite proxy a Edge Function SaaS, el `BASE_URL` de `wisphub.ts` quedó hardcodeado al Edge Function remoto:
+
+```typescript
+// ❌ ANTES: Solo Edge Function (rompe el dev local)
+const BASE_URL = orgService.getWispHubProxyUrl();
+// → https://supabase.rapilinksas.co/functions/v1/proxy-wisphub
+```
+
+**Síntoma**: En local, las llamadas a WispHub llegaban al Edge Function remoto, que construía la URL `https://api.wisphub.io/api/tickets/` desde la base de datos. Sin embargo, la respuesta era HTML (página web de WispHub) en vez de JSON — señal de que la URL almacenada en `organization_settings` no era correcta o el dominio estaba redireccionando.
+
+### URL Correcta de la API WispHub
+
+> [!WARNING]
+> WispHub NO usa subdominios por empresa para su API REST. Usa un servidor compartido.
+>
+> - **Sitio web** (no usar para API): `www.wisphub.io` → nginx, devuelve 403 en `/api/`
+> - **API REST** (usar este): `api.wisphub.io` → Django DRF, acepta `Api-Key`
+> - **Documentación**: `wisphub.net` (solo docs, no producción)
+
+Lo que debe guardarse en `organization_settings.wisphub_url`:
+```
+https://api.wisphub.io
+```
+Sin trailing slash, sin `/api/`, sin subdominio de empresa.
+
+Si se guarda `https://wisphub.io` (sin `api.`), el proxy obtiene el HTML de la página de marketing en vez de JSON — fácil de detectar por el `<!DOCTYPE html>` y el GTM tag en la respuesta.
+
+### Solución Implementada: Split Dev/Prod
+
+```typescript
+// ✅ AHORA: Vite proxy en dev, Edge Function en producción
+const BASE_URL = import.meta.env.DEV
+    ? '/api/wisphub'          // Vite proxy (vite.config.ts → api.wisphub.io)
+    : orgService.getWispHubProxyUrl(); // Edge Function SaaS
+```
+
+Lo mismo aplica para SmartOLT en `smartolt.ts`:
+```typescript
+const baseUrl = import.meta.env.DEV ? '/api/smartolt' : orgService.getSmartOLTProxyUrl();
+```
+
+### Cómo funciona cada ruta
+
+**En desarrollo (`npm run dev`)**:
+```
+Browser → Vite Dev Server (/api/wisphub/tickets/)
+        → proxy rewrite → https://api.wisphub.io/api/tickets/
+        → Api-Key inyectada desde VITE_WISPHUB_API_KEY en .env
+```
+
+**En producción (Dokploy/VPS)**:
+```
+Browser → supabase.rapilinksas.co/functions/v1/proxy-wisphub/tickets/
+        → Edge Function lee organization_settings (wisphub_url + wisphub_token)
+        → https://api.wisphub.io/api/tickets/
+        → Api-Key inyectada desde la BD del tenant
+```
+
+### Diagnóstico Rápido de Proxy Roto
+
+| Síntoma en consola | Causa probable |
+|---|---|
+| `500` desde `supabase.../proxy-wisphub` | Edge Function no desplegada o error interno |
+| `400` desde `supabase.../proxy-wisphub` | `org_id` sin configurar o credenciales vacías en BD |
+| `404` + body HTML con GTM | `wisphub_url` apunta a `wisphub.io` (sin `api.`) |
+| `404` + body JSON `{"detail":"..."}` | Endpoint incorrecto, pero el proxy y URL están OK |
+| `401` desde `supabase.../proxy-wisphub` | JWT vencido o ausente en el header Authorization |
