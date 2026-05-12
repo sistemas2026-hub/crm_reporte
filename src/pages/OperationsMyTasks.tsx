@@ -645,13 +645,24 @@ export function OperationsMyTasks() {
                                 if (!isRelevant) return;
 
                                 console.log('%c[MyTasks:Realtime] 🟣 EVENTO WEBSOCKET RECIBIDO 🟣', 'color: white; background: #8b5cf6; font-size: 14px; font-weight: bold; padding: 4px; border-radius: 4px;', payload);
-                                if (payload.eventType === 'INSERT') {
-                                    dispatchToast("¡Nueva Tarea!", "info", "El centro de despacho te ha asignado un nuevo ticket.", "new-ticket-ws");
-                                } else if (payload.eventType === 'DELETE') {
-                                    dispatchToast("Ticket Reasignado", "info", "Una tarea ha sido removida de tu bandeja.", "rm-ticket-ws");
-                                }
 
-                                await loadMyTasks();
+                                const newRow = payload.new as any;
+                                const oldRow = payload.old as any;
+                                const changedId = newRow?.id || oldRow?.id;
+                                const newStatus = newRow?.status;
+
+                                if (payload.eventType === 'DELETE' || newStatus === 'SS' || newStatus === 'CO' || newStatus === 'ST') {
+                                    // Remoción quirúrgica: no recarga la lista, solo elimina el item
+                                    setMyTasks(prev => prev.filter(t => t.id !== changedId));
+                                    if (payload.eventType === 'DELETE' || newStatus === 'SS') {
+                                        dispatchToast("Ticket reasignado", "info", "Una tarea fue removida de tu bandeja.", "rm-ticket-ws");
+                                    }
+                                } else if (payload.eventType === 'INSERT') {
+                                    // Nueva tarea: sí recarga para obtener los datos completos con joins
+                                    dispatchToast("¡Nueva Tarea!", "info", "El centro de despacho te ha asignado un nuevo ticket.", "new-ticket-ws");
+                                    await loadMyTasks();
+                                }
+                                // UPDATE de otros campos (deadline, etc.): ignorar silenciosamente
                             }
                         )
                         .subscribe();
