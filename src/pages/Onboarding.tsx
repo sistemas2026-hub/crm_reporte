@@ -36,7 +36,6 @@ export function Onboarding() {
     const [smartoltToken, setSmartoltToken] = useState('');
     const [smartoltStatus, setSmartoltStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
 
-    const [createdOrgId, setCreatedOrgId] = useState<string | null>(null);
 
     const handleCreateOrg = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -47,7 +46,7 @@ export function Onboarding() {
 
         try {
             const slug = slugify(orgName);
-            const { org_id, error: orgError } = await orgService.createOrganization({
+            const { error: orgError } = await orgService.createOrganization({
                 orgName: orgName.trim(),
                 slug,
                 companyName: companyName.trim(),
@@ -57,7 +56,6 @@ export function Onboarding() {
 
             if (orgError) throw new Error(orgError);
 
-            setCreatedOrgId(org_id);
             setStep('wisphub');
         } catch (e: any) {
             setError(e.message);

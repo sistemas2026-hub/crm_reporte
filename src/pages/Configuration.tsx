@@ -116,6 +116,7 @@ export function Configuration() {
     const [editingWispHubId, setEditingWispHubId] = useState('');
     const [editingOperationalLevel, setEditingOperationalLevel] = useState(1);
     const [editingIsFieldTech, setEditingIsFieldTech] = useState(false);
+    const [editingStrategicLocation, setEditingStrategicLocation] = useState<'campo' | 'oficina'>('oficina');
     const [editingRole, setEditingRole] = useState<'agente' | 'admin'>('agente');
     const [editingAllowedMenus, setEditingAllowedMenus] = useState<string[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
@@ -331,10 +332,19 @@ export function Configuration() {
 
             if (profiles && profiles.length > 0) {
                 // Asegurar que cada perfil tenga un email decente para mostrar
-                const mappedProfiles = profiles.map((p: any) => ({
-                    ...p,
-                    email: p.email || (p.id === user.id ? user.email : `Cuenta: ${p.id.slice(0, 8)}`)
-                }));
+                const mappedProfiles = profiles.map((p: any) => {
+                    // Sanitizar strategic_location: normalizar cualquier variante a 'campo' | 'oficina'
+                    const rawLoc = String(p.strategic_location || '').toLowerCase().trim();
+                    const normalizedLoc: 'campo' | 'oficina' =
+                        (rawLoc === 'campo' || rawLoc === 'field') ? 'campo' :
+                        (rawLoc === 'oficina' || rawLoc === 'office') ? 'oficina' :
+                        (p.is_field_tech ? 'campo' : 'oficina');
+                    return {
+                        ...p,
+                        strategic_location: normalizedLoc,
+                        email: p.email || (p.id === user.id ? user.email : `Cuenta: ${p.id.slice(0, 8)}`)
+                    };
+                });
                 setUsers(mappedProfiles);
             } else {
                 // Fallback: Identificar usuarios por interacciones
@@ -439,6 +449,25 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                 if (editingEmail && editingEmail !== currentUser.email) userUpdates.email = editingEmail;
 
                 await supabase.auth.updateUser(userUpdates);
+            }
+
+            // Guardar strategic_location directamente en profiles
+            // (la RPC no lo maneja; este update es la única fuente de verdad del campo)
+            const locToSave: 'campo' | 'oficina' = (editingStrategicLocation === 'campo') ? 'campo' : 'oficina';
+            console.log(`[Configuration] ✏️ Intentando guardar ubicación: "${locToSave}" para el usuario: ${userId}`);
+
+            const { error: locError } = await supabase
+                .from('profiles')
+                .update({ strategic_location: locToSave })
+                .eq('id', userId);
+
+            if (locError) {
+                console.error('[Configuration] ❌ Error al guardar strategic_location:', locError);
+                alert(`ERROR al guardar la ubicación estratégica:\n${locError.message}\n\nEl resto de los datos sí se guardó. Verifica permisos de la columna "strategic_location" en profiles.`);
+            } else {
+                console.log(`[Configuration] ✅ strategic_location="${locToSave}" guardado correctamente para ${userId}`);
+                // Notificar a otros componentes (ej. OperationsSupervision) para que refresquen sus usuarios
+                window.dispatchEvent(new CustomEvent('supervision:users-updated', { detail: { userId, strategic_location: locToSave } }));
             }
 
             alert('Usuario actualizado correctamente (Sincronización Total)');
@@ -1490,10 +1519,10 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                                                                 <div className="grid grid-cols-2 gap-3 p-1.5 bg-slate-100/80 backdrop-blur-sm rounded-2xl border border-slate-200/60 shadow-inner">
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => setEditingIsFieldTech(false)}
+                                                                        onClick={() => { setEditingIsFieldTech(false); setEditingStrategicLocation('oficina'); }}
                                                                         className={clsx(
                                                                             "flex items-center justify-center gap-2 py-3 rounded-xl text-[10px] font-black uppercase transition-all duration-300",
-                                                                            !editingIsFieldTech
+                                                                            editingStrategicLocation === 'oficina'
                                                                                 ? "bg-white text-blue-600 shadow-md shadow-blue-500/10 border-b-2 border-blue-500 transform scale-[1.02]"
                                                                                 : "text-slate-400 hover:text-slate-600 hover:bg-white/40"
                                                                         )}
@@ -1502,10 +1531,10 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                                                                     </button>
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => setEditingIsFieldTech(true)}
+                                                                        onClick={() => { setEditingIsFieldTech(true); setEditingStrategicLocation('campo'); }}
                                                                         className={clsx(
                                                                             "flex items-center justify-center gap-2 py-3 rounded-xl text-[10px] font-black uppercase transition-all duration-300",
-                                                                            editingIsFieldTech
+                                                                            editingStrategicLocation === 'campo'
                                                                                 ? "bg-white text-orange-600 shadow-md shadow-orange-500/10 border-b-2 border-orange-500 transform scale-[1.02]"
                                                                                 : "text-slate-400 hover:text-slate-600 hover:bg-white/40"
                                                                         )}
@@ -1673,6 +1702,8 @@ Esta acción es IRREVERSIBLE y eliminará tanto su perfil como su cuenta de acce
                                                             setEditingWispHubId(user.wisphub_id || '');
                                                             setEditingOperationalLevel(user.operational_level !== undefined ? user.operational_level : 1);
                                                             setEditingIsFieldTech(user.is_field_tech || false);
+                                                            // Cargar strategic_location ya normalizado (sanitizado al cargar profiles)
+                                                            setEditingStrategicLocation(user.strategic_location ?? (user.is_field_tech ? 'campo' : 'oficina'));
                                                             setEditingRole(user.role === 'admin' ? 'admin' : 'agente');
                                                             setEditingEmail(user.email || '');
                                                             setEditingAllowedMenus(user.allowed_menus || ["Dashboard"]);

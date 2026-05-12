@@ -453,7 +453,7 @@ export const WorkflowService = {
             // 1. Obtener perfiles reales con ID de WispHub
             const { data: profiles, error: profilesError } = await supabase
                 .from('profiles')
-                .select('id, full_name, email, role, wisphub_id, operational_level, is_field_tech');
+                .select('id, full_name, email, role, wisphub_id, operational_level, is_field_tech, strategic_location');
 
             if (profilesError) {
                 if (profilesError.message?.includes('aborted') || (profilesError as any).name === 'AbortError') {
@@ -477,13 +477,16 @@ export const WorkflowService = {
 
             const finalUsers = (profiles || []).map(p => ({
                 id: p.id,
-                full_name: p.full_name, // Mantener para el select
+                full_name: p.full_name,
                 display_name: p.full_name || p.email || `ID: ${p.id.substring(0, 8)}`,
                 email: p.email,
                 role: p.role,
                 wisphub_id: p.wisphub_id,
-                operational_level: p.operational_level, // CRÍTICO para el filtro de escalado
+                operational_level: p.operational_level,
                 is_field_tech: p.is_field_tech,
+                strategic_location: p.strategic_location
+                    ? (String(p.strategic_location).toLowerCase().trim() as "campo" | "oficina")
+                    : null,
                 is_profile: true
             }));
 
@@ -501,7 +504,8 @@ export const WorkflowService = {
                         wisphub_id: id,
                         operational_level: null,
                         is_field_tech: false,
-                        is_profile: false
+                        is_profile: false,
+                        strategic_location: null,
                     });
                 }
             }

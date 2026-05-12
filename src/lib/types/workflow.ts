@@ -54,4 +54,5 @@ export interface PlatformUser {
     operational_level: number | null;
     is_field_tech: boolean;
     is_profile: boolean;
+    strategic_location: 'campo' | 'oficina' | null;
 }

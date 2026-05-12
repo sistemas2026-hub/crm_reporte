@@ -61,6 +61,10 @@ export function OperationsMyTasks() {
     });
     const [pendingSyncCount, setPendingSyncCount] = useState(0);
     const [userProfile, setUserProfile] = useState<any | null>(null); // RBAC State
+    // ticketId del ticket cuyo botón de acción está en progreso (Iniciar / Llegada)
+    const [actioningTicket, setActioningTicket] = useState<string | null>(null);
+    // UUID de Supabase del técnico actual — se guarda una vez al cargar tareas
+    const currentUserIdRef = useRef<string | null>(null);
     const [companyName, setCompanyName] = useState<string>('ISP Reports');
     const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit Modal State
     const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
@@ -164,83 +168,163 @@ export function OperationsMyTasks() {
         setLoading(true);
         try {
             console.log('\n=======================================');
-            console.log('[MyTasks-Trace] 1. INICIANDO CARGA DE TAREAS');
+            console.log('[MyTasks] 1. INICIANDO CARGA DE TAREAS');
             const { data: { user }, error: authError } = await safeGetUser();
 
             if (authError || !user) {
-                console.warn('[MyTasks-Trace] ❌ No hay usuario autenticado o error en auth. Cancelando.');
+                console.warn('[MyTasks] ❌ No hay usuario autenticado. Cancelando.');
                 return;
             }
 
             // Inicializar encriptación de borradores con la clave del técnico
             await draftService.init(user.id);
 
-            console.log(`[MyTasks-Trace] 2. Auth User ID: ${user.id} | Email: ${user.email}`);
+            // Perfil COMPLETO: necesitamos wisphub_id para el matching por nombre
+            const { data: profile, error: profileError } = await supabase
+                .from('profiles')
+                .select('id, full_name, wisphub_id, email')
+                .eq('id', user.id)
+                .maybeSingle();
 
-            // Resolvemos el perfil (mismo fallback que el servicio)
-            const { data: profile, error: profileError } = await supabase.from('profiles').select('id, full_name').eq('id', user.id).maybeSingle();
-
-            if (profileError) {
-                if (profileError.message?.includes('aborted') || (profileError as any).name === 'AbortError') {
-                    console.warn('[MyTasks-Trace] ⚠️ Perfil abortado. Reintentando después...');
-                    return;
-                }
+            if (profileError && (profileError.message?.includes('aborted') || (profileError as any).name === 'AbortError')) {
+                console.warn('[MyTasks] ⚠️ Perfil abortado. Reintentando después...');
+                return;
             }
 
             let finalProfile = profile;
-
             if (!finalProfile && user.email) {
-                const { data: emailProfile, error: emailError } = await supabase.from('profiles').select('id, full_name').eq('email', user.email).maybeSingle();
-                if (!emailError) finalProfile = emailProfile;
-                if (finalProfile) console.log(`[MyTasks-Trace] 3. Perfil encontrado vía email: ${finalProfile.id} (${finalProfile.full_name})`);
-            } else if (finalProfile) {
-                console.log(`[MyTasks-Trace] 3. Perfil encontrado vía UUID: ${finalProfile.id} (${finalProfile.full_name})`);
-            } else {
-                console.log(`[MyTasks-Trace] 3. ⚠️ No se encontró perfil. Se usará Auth User ID.`);
+                const { data: ep } = await supabase
+                    .from('profiles')
+                    .select('id, full_name, wisphub_id, email')
+                    .eq('email', user.email)
+                    .maybeSingle();
+                if (ep) finalProfile = ep;
             }
 
-            const targetParticipantId = finalProfile?.id || user.id;
-            console.log(`[MyTasks-Trace] 4. Ejecutando Query Supabase buscando participant_id = ${targetParticipantId} y status = PE...`);
+            const participantId  = finalProfile?.id      || user.id;
+            const wisphubMapping = String(finalProfile?.wisphub_id ?? '').trim();
+            const userEmail      = String(finalProfile?.email ?? user.email ?? '').trim();
+            const userFullName   = String(finalProfile?.full_name ?? '').trim();
 
-            // Query simple con joins necesarios
-            const { data, error } = await supabase
+            // Persistir UUID para uso en handleStartWork / handleArrival
+            currentUserIdRef.current = participantId;
+
+            // LOG DE DIAGNÓSTICO REQUERIDO
+            console.log(`[MyTasks] Buscando tareas para el usuario: ${participantId} con mapping: "${wisphubMapping}"`);
+            console.log(`[MyTasks] Email: "${userEmail}" | Nombre completo: "${userFullName}"`);
+
+            // ── CONSULTA 1: workitems asignados directamente por UUID ─────────
+            const { data: byParticipantRaw, error: wiError } = await supabase
                 .from('workflow_workitems')
                 .select(`
-                    id,
-                    status,
-                    participant_id,
-                    created_at,
+                    id, status, participant_id, created_at,
                     workflow_activities (
                         name,
                         workflow_processes (
-                            id,
-                            title,
-                            reference_id,
-                            priority,
-                            metadata
+                            id, title, reference_id, priority, metadata
                         )
                     )
                 `)
-                .eq('participant_id', targetParticipantId)
+                .eq('participant_id', participantId)
                 .eq('status', 'PE')
                 .order('created_at', { ascending: false });
 
-            if (error) {
-                // Manejo de AbortError silencioso para evitar parpadeos/limpiezas de estado ante recargas
-                if (error.message?.includes('aborted') || (error as any).name === 'AbortError') {
-                    console.warn('[MyTasks-Trace] ⚠️ Carga abortada por el navegador. Manteniendo estado previo.');
+            if (wiError) {
+                if (wiError.message?.includes('aborted') || (wiError as any).name === 'AbortError') {
+                    console.warn('[MyTasks] ⚠️ Consulta 1 abortada.');
                     return;
                 }
-                console.error('[MyTasks-Trace] ❌ Error en Query Supabase:', error);
-                throw error;
+                console.error('[MyTasks] ❌ Error consulta 1 (workitems):', wiError);
             }
 
-            console.log(`[MyTasks-Trace] 5. Query OK. Tickets devueltos por BD: ${data?.length || 0}`);
+            const byParticipant = byParticipantRaw || [];
+            console.log(`[MyTasks] Consulta 1 (participant_id UUID): ${byParticipant.length} tickets`);
+
+            // ── CONSULTA 2: procesos por nombre_tecnico / email_tecnico ────────
+            // Cubre el caso donde el sync no pudo resolver el participant_id
+            // pero el ticket SÍ tiene el nombre o email del técnico en metadata.
+            // NOTA: no filtramos por strategic_location — un valor nulo no debe
+            //       ocultar tareas. El campo puede no estar migrado aún.
+            const nameConditions: string[] = [];
+            if (wisphubMapping) nameConditions.push(`metadata->>nombre_tecnico.ilike.%${wisphubMapping}%`);
+            if (userFullName)   nameConditions.push(`metadata->>nombre_tecnico.ilike.%${userFullName}%`);
+            if (userEmail)      nameConditions.push(`metadata->>email_tecnico.ilike.%${userEmail}%`);
+
+            let byName: any[] = [];
+
+            if (nameConditions.length > 0) {
+                console.log(`[MyTasks] Consulta 2 — condiciones OR: ${nameConditions.join(' | ')}`);
+
+                const { data: procs } = await supabase
+                    .from('workflow_processes')
+                    .select(`
+                        id, title, reference_id, priority, metadata, created_at,
+                        workflow_activities (
+                            name,
+                            workflow_workitems (id, status, participant_id, created_at)
+                        )
+                    `)
+                    .or(nameConditions.join(','))
+                    .order('created_at', { ascending: false });
+
+                // Solo procesos que tienen algún workitem PE (activo) o sin workitems (recién sincronizados)
+                const relevant = (procs || []).filter(proc => {
+                    const wis = (proc.workflow_activities || []).flatMap((a: any) => a.workflow_workitems || []);
+                    return wis.length === 0 || wis.some((wi: any) => wi.status === 'PE');
+                });
+
+                // Deduplicar contra Consulta 1 (evitar mostrar el mismo ticket dos veces)
+                const coveredProcessIds = new Set(
+                    byParticipant
+                        .map((wi: any) => wi.workflow_activities?.workflow_processes?.id)
+                        .filter(Boolean)
+                );
+
+                // Convertir al mismo shape que un workitem para que el sort funcione sin cambios
+                byName = relevant
+                    .filter(proc => !coveredProcessIds.has(proc.id))
+                    .map(proc => {
+                        const allWi = (proc.workflow_activities || []).flatMap((a: any) =>
+                            (a.workflow_workitems || []).map((wi: any) => ({ ...wi, _actName: a.name }))
+                        );
+                        const peWi = allWi.find((wi: any) => wi.status === 'PE');
+                        return {
+                            id:             peWi?.id || `proc-${proc.id}`,
+                            status:         'PE',
+                            participant_id: peWi?.participant_id || participantId,
+                            created_at:     peWi?.created_at || proc.created_at,
+                            // Marca interna: este ticket llegó por matching de nombre, no por workitem UUID
+                            __fromNameQuery: true,
+                            __ownerId:       participantId,
+                            workflow_activities: {
+                                name: peWi?._actName || 'Tarea Asignada',
+                                workflow_processes: {
+                                    id:           proc.id,
+                                    title:        proc.title,
+                                    reference_id: proc.reference_id,
+                                    priority:     proc.priority,
+                                    metadata:     proc.metadata,
+                                }
+                            }
+                        };
+                    });
+
+                console.log(`[MyTasks] Consulta 2 (nombre/email): ${relevant.length} coincidencias → ${byName.length} nuevas (sin duplicados)`);
+            } else {
+                console.warn('[MyTasks] ⚠️ Consulta 2 omitida: wisphub_id, full_name y email están vacíos');
+            }
+
+            const allTasks = [...byParticipant, ...byName];
+            console.log(`[MyTasks] Total combinado: ${allTasks.length} tareas`);
+
+            if (allTasks.length === 0) {
+                console.warn('[MyTasks] Lista vacía. Verifica: ¿El campo wisphub_id del perfil coincide con metadata.nombre_tecnico de los tickets?');
+            }
 
             // === Ordenamiento Inteligente: Prioridad > Sin Internet > Atrasados > Proximidad/Barrio > Fecha ===
             const officeCoords = geoService.getOfficeCoords();
 
-            const sortedData = [...(data || [])].sort((a, b) => {
+            const sortedData = [...allTasks].sort((a, b) => {
                 const getMeta = (t: any) => t.workflow_activities?.workflow_processes?.metadata || {};
 
                 const getPrio = (t: any) => {
@@ -299,7 +383,7 @@ export function OperationsMyTasks() {
             });
 
             setMyTasks(sortedData);
-            console.log(`[MyTasks-Trace] 6. Estado React (myTasks) ordenado inteligentemente y actualizado.`);
+            console.log(`[MyTasks] ✅ ${sortedData.length} tareas cargadas y ordenadas.`);
             console.log('=======================================\n');
 
             // Guardamos el perfil completo para RBAC
@@ -310,7 +394,7 @@ export function OperationsMyTasks() {
             orgService.getCompanyName().then(name => setCompanyName(name));
 
         } catch (error) {
-            console.error('[MyTasks-Trace] ❌ Error general en loadMyTasks:', error);
+            console.error('[MyTasks] ❌ Error general en loadMyTasks:', error);
         } finally {
             setLoading(false);
         }
@@ -392,33 +476,85 @@ export function OperationsMyTasks() {
         localStorage.setItem('tech_timeline_v1', JSON.stringify(newTimeline));
     };
 
-    const handleStartWork = async (ticketId: string) => {
-        const ok = await WisphubService.setTicketStartTime(ticketId);
-        if (ok) {
-            saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
-        }
-    };
+    const handleStartWork = async (wi: any) => {
+        const proc    = wi.workflow_activities?.workflow_processes;
+        const ticketId = String(proc?.reference_id ?? '').trim();
 
-
-    const handleArrival = async (ticketId: string) => {
-        console.log('[handleArrival] Clicked for ticket:', ticketId);
+        console.log(`[handleStartWork] Iniciando ticket: "${ticketId}" | fromNameQuery: ${!!wi.__fromNameQuery} | ownerId: ${wi.__ownerId ?? currentUserIdRef.current}`);
 
         if (!ticketId || ticketId === '---') {
-            console.error('[handleArrival] Error: No se encontró un ID de ticket válido.');
+            dispatchToast('Error: ID de ticket inválido', 'error', `El ticket no tiene reference_id. Datos: ${JSON.stringify(proc)}`);
             return;
         }
 
-        setProcessing(true);
+        setActioningTicket(ticketId + '_start');
         try {
+            // Inyección de identidad: si el ticket vino por nombre (Consulta 2),
+            // registrar participant_id en el workitem para que las consultas futuras lo encuentren por UUID.
+            if (wi.__fromNameQuery) {
+                const ownerId = wi.__ownerId || currentUserIdRef.current;
+                if (ownerId && wi.id && !wi.id.startsWith('proc-')) {
+                    console.log(`[handleStartWork] Inyectando participant_id=${ownerId} en workitem ${wi.id}`);
+                    await supabase
+                        .from('workflow_workitems')
+                        .update({ participant_id: ownerId, updated_at: new Date().toISOString() })
+                        .eq('id', wi.id);
+                }
+            }
+
+            const ok = await WisphubService.setTicketStartTime(ticketId);
+
+            if (ok) {
+                saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
+                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} marcado como iniciado en WispHub.`);
+            } else {
+                dispatchToast('No se pudo iniciar', 'error', `WispHub rechazó el inicio del ticket #${ticketId}. Verifica que el ticket exista y esté activo.`);
+            }
+        } catch (err: any) {
+            console.error('[handleStartWork] Error:', err);
+            dispatchToast('Error al iniciar', 'error', err?.message || String(err));
+        } finally {
+            setActioningTicket(null);
+        }
+    };
+
+    const handleArrival = async (wi: any) => {
+        const proc     = wi.workflow_activities?.workflow_processes;
+        const ticketId = String(proc?.reference_id ?? '').trim();
+
+        console.log(`[handleArrival] Llegada para ticket: "${ticketId}" | fromNameQuery: ${!!wi.__fromNameQuery}`);
+
+        if (!ticketId || ticketId === '---') {
+            dispatchToast('Error: ID de ticket inválido', 'error', `El ticket no tiene reference_id. Datos: ${JSON.stringify(proc)}`);
+            return;
+        }
+
+        setActioningTicket(ticketId + '_arrive');
+        try {
+            // Inyección de identidad igual que en Iniciar
+            if (wi.__fromNameQuery) {
+                const ownerId = wi.__ownerId || currentUserIdRef.current;
+                if (ownerId && wi.id && !wi.id.startsWith('proc-')) {
+                    await supabase
+                        .from('workflow_workitems')
+                        .update({ participant_id: ownerId, updated_at: new Date().toISOString() })
+                        .eq('id', wi.id);
+                }
+            }
+
             const ok = await WisphubService.sendArrivalComment(ticketId);
-            console.log('[handleArrival] Result:', ok);
+
             if (ok) {
                 saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
+                dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — llegada confirmada.`);
             } else {
-                console.error('[handleArrival] Failed to send arrival event');
+                dispatchToast('No se pudo registrar llegada', 'error', `WispHub rechazó la llegada del ticket #${ticketId}.`);
             }
+        } catch (err: any) {
+            console.error('[handleArrival] Error:', err);
+            dispatchToast('Error al registrar llegada', 'error', err?.message || String(err));
         } finally {
-            setProcessing(false);
+            setActioningTicket(null);
         }
     };
 
@@ -518,14 +654,30 @@ export function OperationsMyTasks() {
             }
 
             // 5. Sincronización en SEGUNDO PLANO (Silent Background)
+            // Si el proxy de WispHub está caído (500) no bloqueamos la UI.
+            // El técnico sigue viendo sus tareas desde Supabase (cargadas en paso 1).
             try {
-                // Solo iniciamos syncing visual si no tenemos tareas (primera carga)
-                if (myTasks.length === 0) setSyncing(true);
-
-                console.log('[OperationsMyTasks] 🔄 Sincronización en segundo plano iniciada...');
-                await WorkflowService.syncMyTickets();
-            } catch (syncError) {
-                console.warn('[OperationsMyTasks] ⚠️ Sincronización abortada/fallida:', syncError);
+                // Prueba rápida de disponibilidad antes de iniciar el sync completo
+                const { ok: proxyHealthy } = await orgService.verifyWisphub().catch(() => ({ ok: false }));
+                if (!proxyHealthy) {
+                    console.warn('[OperationsMyTasks] ⚠️ Proxy WispHub no disponible. Sync omitido — las tareas ya se cargaron desde Supabase.');
+                    dispatchToast(
+                        'Sincronización WispHub no disponible',
+                        'info',
+                        'El proxy está caído (error 500). Tus tareas se muestran desde el espejo local. Contacta a tu administrador para redesplegar la Edge Function.',
+                    );
+                } else {
+                    if (myTasks.length === 0) setSyncing(true);
+                    console.log('[OperationsMyTasks] 🔄 Sincronización en segundo plano iniciada...');
+                    await WorkflowService.syncMyTickets();
+                }
+            } catch (syncError: any) {
+                const is500 = syncError?.message?.includes('500') || syncError?.status === 500;
+                if (is500) {
+                    console.warn('[OperationsMyTasks] ⚠️ Sync falló con 500 (proxy caído). Tareas locales intactas.');
+                } else {
+                    console.warn('[OperationsMyTasks] ⚠️ Sincronización abortada/fallida:', syncError);
+                }
             } finally {
                 if (isMounted) {
                     await loadMyTasks();
@@ -783,22 +935,40 @@ export function OperationsMyTasks() {
                                         {/* Botón de Inicio si no ha empezado */}
                                         {!timelineStatus[ticketId]?.started && (
                                             <button
-                                                onClick={() => handleStartWork(ticketId)}
-                                                className="px-3 py-2 bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-emerald-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0"
+                                                onClick={() => handleStartWork(wi)}
+                                                disabled={actioningTicket === ticketId + '_start'}
+                                                className={clsx(
+                                                    'px-3 py-2 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0',
+                                                    actioningTicket === ticketId + '_start'
+                                                        ? 'opacity-60 cursor-not-allowed'
+                                                        : 'hover:bg-emerald-100'
+                                                )}
                                                 title="Marcar Inicio de Trabajo"
                                             >
-                                                <Play size={12} fill="currentColor" /> Iniciar
+                                                {actioningTicket === ticketId + '_start'
+                                                    ? <><RefreshCw size={12} className="animate-spin" /> Iniciando...</>
+                                                    : <><Play size={12} fill="currentColor" /> Iniciar</>
+                                                }
                                             </button>
                                         )}
 
                                         {/* Botón de Llegada si ya inició pero no ha llegado */}
                                         {timelineStatus[ticketId]?.started && !timelineStatus[ticketId]?.arrived && (
                                             <button
-                                                onClick={() => handleArrival(ticketId)}
-                                                className="px-3 py-2 bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0"
+                                                onClick={() => handleArrival(wi)}
+                                                disabled={actioningTicket === ticketId + '_arrive'}
+                                                className={clsx(
+                                                    'px-3 py-2 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0',
+                                                    actioningTicket === ticketId + '_arrive'
+                                                        ? 'opacity-60 cursor-not-allowed'
+                                                        : 'hover:bg-blue-100'
+                                                )}
                                                 title="Reportar Llegada al sitio"
                                             >
-                                                <MapPin size={12} fill="currentColor" /> Llegada
+                                                {actioningTicket === ticketId + '_arrive'
+                                                    ? <><RefreshCw size={12} className="animate-spin" /> Llegando...</>
+                                                    : <><MapPin size={12} fill="currentColor" /> Llegada</>
+                                                }
                                             </button>
                                         )}
 

@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
     Search, Calendar, RefreshCcw,
     ChevronLeft, ChevronRight, Users, Filter,
-    CheckSquare, Square, AlertCircle, Loader2, X
+    CheckSquare, Square, AlertCircle, Loader2, X,
+    ArrowRight, Zap, Building2, ClipboardList
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
@@ -20,7 +21,6 @@ function getSlaInfo(
     ticketType: string,
     slaMap: Record<string, SlaConfig>
 ): { hoursOpen: number; pct: number; status: SlaStatus; maxHours: number } {
-    // Aislar asunto puro (ver memoria técnica §12)
     const isolated = ticketType.includes(' - ') ? ticketType.split(' - ')[0] : ticketType;
     const key = isolated.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim();
     const cfg = slaMap[key] || slaMap['ADMINISTRATIVO'] || { max_hours: 24, threshold_pct: 80 };
@@ -30,17 +30,29 @@ function getSlaInfo(
     return { hoursOpen: Math.round(hoursOpen * 10) / 10, pct, status, maxHours: cfg.max_hours };
 }
 
-const PAGE_SIZE = 50;
+const REMOTE_TESTS = [
+    'Ping exitoso al router del cliente',
+    'Speed test realizado (bajada/subida)',
+    'Reinicio remoto de OLT/puerto',
+    'Revisión de señal óptica en SmartOLT',
+    'Verificación de VLAN y configuración',
+    'Contacto telefónico con el cliente',
+];
 
 export function OperationsSupervision() {
+    // ── Datos principales
     const [processes, setProcesses] = useState<any[]>([]);
     const [platformUsers, setPlatformUsers] = useState<any[]>([]);
     const [slaMap, setSlaMap] = useState<Record<string, SlaConfig>>({});
     const [loading, setLoading] = useState(false);
     const [totalCount, setTotalCount] = useState(0);
     const [page, setPage] = useState(0);
+    const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
 
-    // Filtros
+    // ── Pestañas
+    const [activeTab, setActiveTab] = useState<'campo' | 'oficina'>('campo');
+
+    // ── Filtros
     const [searchTerm, setSearchTerm] = useState('');
     const [filterTech, setFilterTech] = useState('');
     const [filterBarrio, setFilterBarrio] = useState('');
@@ -50,13 +62,26 @@ export function OperationsSupervision() {
         end: new Date().toISOString().split('T')[0],
     });
 
-    // Bulk reassign
+    // ── Bulk reassign
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [bulkTech, setBulkTech] = useState('');
     const [bulkReassigning, setBulkReassigning] = useState(false);
     const [bulkResult, setBulkResult] = useState<string | null>(null);
 
-    // Cleanup legacy cache al montar (ver memoria técnica §11)
+    // ── Transferencia a Campo
+    const [transferTarget, setTransferTarget] = useState<any | null>(null);
+    const [transferNote, setTransferNote] = useState('');
+    const [transferTech, setTransferTech] = useState('');
+    const [transferring, setTransferring] = useState(false);
+    const [remoteTestsDone, setRemoteTestsDone] = useState<string[]>([]);
+
+    // ── SLA alert ref (evita duplicar alertas)
+    const slaAlertedRef = useRef<Set<string>>(new Set());
+
+    // ── Flag de carga secuencial: el filtro NO corre hasta que usuarios estén listos
+    const [platformUsersReady, setPlatformUsersReady] = useState(false);
+
+    // ── Cleanup legacy cache al montar (ver memoria técnica §11)
     useEffect(() => {
         try {
             Object.keys(localStorage).forEach(k => {
@@ -65,12 +90,78 @@ export function OperationsSupervision() {
         } catch (_) { /* ignorar */ }
     }, []);
 
-    // Cargar SLA config y usuarios una sola vez
+    // ── Supabase Realtime: actualizaciones instantáneas sin polling
     useEffect(() => {
-        (async () => {
-            const users = await WorkflowService.getPlatformUsers();
-            if (users) setPlatformUsers(users);
+        const channel = supabase
+            .channel('supervision-realtime')
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'workflow_processes',
+            }, (payload) => {
+                setProcesses(prev => [payload.new as any, ...prev]);
+                setTotalCount(prev => prev + 1);
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'workflow_processes',
+            }, (payload) => {
+                setProcesses(prev =>
+                    prev.map(p => p.id === (payload.new as any).id ? { ...p, ...payload.new } : p)
+                );
+            })
+            .subscribe();
 
+        return () => { supabase.removeChannel(channel); };
+    }, []);
+
+    // ── Alerta sonora cuando un ticket llega al 100% de SLA
+    useEffect(() => {
+        if (processes.length === 0 || Object.keys(slaMap).length === 0) return;
+
+        const criticalNew = processes.filter(p => {
+            const type = p.title?.split(' - ')[0] || p.metadata?.asunto || '';
+            return getSlaInfo(p.created_at, type, slaMap).status === 'critical'
+                && !slaAlertedRef.current.has(p.id);
+        });
+
+        if (criticalNew.length > 0) {
+            criticalNew.forEach(p => slaAlertedRef.current.add(p.id));
+            try {
+                const ctx = new AudioContext();
+                [880, 1100, 880].forEach((freq, i) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.frequency.value = freq;
+                    const t = ctx.currentTime + i * 0.25;
+                    gain.gain.setValueAtTime(0.25, t);
+                    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+                    osc.start(t);
+                    osc.stop(t + 0.2);
+                });
+            } catch (_) { /* AudioContext bloqueado por política del navegador */ }
+        }
+    }, [processes, slaMap]);
+
+    // ── Carga (y recarga) de usuarios de plataforma
+    const reloadPlatformUsers = useCallback(async () => {
+        const users = await WorkflowService.getPlatformUsers();
+        if (users) {
+            setPlatformUsers(users);
+            setPlatformUsersReady(true);
+            console.log(`[Supervision] ✅ platformUsers listos: ${users.length} usuarios`);
+            console.log('[Supervision] strategic_locations:', users.map(u => `${u.full_name}=${u.strategic_location ?? 'null'}`));
+        }
+    }, []);
+
+    // ── Cargar SLA config y usuarios una sola vez al montar
+    useEffect(() => {
+        reloadPlatformUsers();
+
+        (async () => {
             const org = await orgService.getSettings().catch(() => null);
             if (org?.org_id) {
                 const { data } = await supabase
@@ -79,12 +170,28 @@ export function OperationsSupervision() {
                     .eq('org_id', org.org_id);
                 if (data) {
                     const map: Record<string, SlaConfig> = {};
-                    data.forEach((r: any) => { map[r.ticket_type.toUpperCase()] = { max_hours: r.max_hours, threshold_pct: r.threshold_pct }; });
+                    data.forEach((r: any) => {
+                        map[r.ticket_type.toUpperCase()] = {
+                            max_hours: r.max_hours,
+                            threshold_pct: r.threshold_pct,
+                        };
+                    });
                     setSlaMap(map);
                 }
             }
         })();
-    }, []);
+    }, [reloadPlatformUsers]);
+
+    // ── Escuchar guardados desde Configuration para refrescar usuarios sin recargar
+    useEffect(() => {
+        const handleUsersUpdated = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            console.log(`[Supervision] 🔄 Recibido supervision:users-updated para ${detail?.userId} → strategic_location="${detail?.strategic_location}". Recargando usuarios...`);
+            reloadPlatformUsers();
+        };
+        window.addEventListener('supervision:users-updated', handleUsersUpdated);
+        return () => window.removeEventListener('supervision:users-updated', handleUsersUpdated);
+    }, [reloadPlatformUsers]);
 
     const loadPage = useCallback(async () => {
         setLoading(true);
@@ -98,7 +205,7 @@ export function OperationsSupervision() {
                 .gte('created_at', dateRange.start)
                 .lte('created_at', dateRange.end + 'T23:59:59')
                 .order('created_at', { ascending: false })
-                .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+                .range(page * pageSize, (page + 1) * pageSize - 1);
 
             if (filterEscalated === 'yes') query = query.gte('escalation_level', 2);
             if (filterEscalated === 'no') query = query.lt('escalation_level', 2);
@@ -115,23 +222,253 @@ export function OperationsSupervision() {
         } finally {
             setLoading(false);
         }
-    }, [dateRange, page, filterEscalated, filterBarrio, searchTerm]);
+    }, [dateRange, page, pageSize, filterEscalated, filterBarrio, searchTerm]);
 
     useEffect(() => {
         setPage(0);
-    }, [dateRange, filterEscalated, filterBarrio, searchTerm]);
+    }, [dateRange, filterEscalated, filterBarrio, searchTerm, pageSize, activeTab]);
 
     useEffect(() => {
         loadPage();
     }, [loadPage]);
 
-    // ── Filtro de técnico en cliente (ya mapeado)
-    const filtered = filterTech
-        ? processes.filter(p => {
-            const tech = (p.metadata?.nombre_tecnico || p.metadata?.email_tecnico || '').toLowerCase();
-            return tech.includes(filterTech.toLowerCase());
-        })
-        : processes;
+    // Normaliza texto: minúsculas + sin acentos + sin espacios extra
+    // "LUCÍA ACUÑA" → "lucia acuna" para comparación flexible
+    const normalizeText = (s: string) =>
+        String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+    // ── Mapa de búsqueda rápida O(1): todas las claves posibles → usuario
+    const userByKey = useMemo(() => {
+        const map = new Map<string, any>();
+        for (const u of platformUsers) {
+            // Claves exactas
+            if (u.id)         map.set(String(u.id).toLowerCase().trim(), u);
+            if (u.email)      map.set(String(u.email).toLowerCase().trim(), u);
+            // wisphub_id = "Usuario WispHub (Mapping)" — clave principal de cruce
+            if (u.wisphub_id) map.set(String(u.wisphub_id).toLowerCase().trim(), u);
+            if (u.wisphub_id) map.set(normalizeText(u.wisphub_id), u);
+            // Nombre completo normalizado (sin acentos) para cruce con nombre_tecnico de WispHub
+            if (u.full_name)     map.set(normalizeText(u.full_name), u);
+            if (u.display_name)  map.set(normalizeText(u.display_name), u);
+        }
+        return map;
+    }, [platformUsers]);
+
+    // ── Enriquecimiento + filtrado por pestaña + filtro de técnico
+    const filtered = useMemo(() => {
+        // Debug: exponer en window para diagnóstico desde consola
+        (window as any).__debugProcesses     = processes;
+        (window as any).__debugPlatformUsers = platformUsers;
+        (window as any).__debugUserByKey     = userByKey;
+
+        // Carga secuencial: no filtrar hasta que platformUsers esté 100% listo
+        if (!platformUsersReady) {
+            console.log('[Supervision] ⏳ Esperando carga de usuarios...');
+            return [];
+        }
+
+        console.log(`[Supervision] useMemo → processes: ${processes.length}, usuarios: ${platformUsers.length}, claves mapa: ${userByKey.size}`);
+        if (processes.length > 0) {
+            console.log('[Supervision] metadata[0]:', JSON.stringify(processes[0]?.metadata ?? {}));
+        }
+
+        let _dbgN = 0; // contador para limitar debug extremo a los primeros 5 tickets
+
+        const enriched = processes.map(p => {
+            _dbgN++;
+            const isDeep = _dbgN <= 5; // LOG EXTREMO solo en primeros 5
+            const ref = p.reference_id || p.id.slice(0, 8);
+
+            let assignedUser: any = null;
+            let matchSource = '';
+
+            // Extracción con conversión explícita a String para evitar fallos number vs string
+            const nombreTecnico = String(p.metadata?.nombre_tecnico ?? '').trim();
+            const emailTecnico  = String(p.metadata?.email_tecnico  ?? '').trim();
+            // id_tecnico puede llegar como number 123 o string "123" — String() normaliza ambos
+            const rawId = p.metadata?.id_tecnico ?? p.metadata?.tecnico?.id ?? p.metadata?.tecnico_asignado?.id;
+            const idTecnico = rawId != null ? String(rawId).trim() : null;
+            const normNombre = normalizeText(nombreTecnico);
+
+            if (isDeep) {
+                console.group(`%c[Supervision][DEEP #${_dbgN}] Ticket #${ref}`, 'color:#7c3aed;font-weight:bold');
+                console.log('📋 Nombre en Ticket (raw):', JSON.stringify(p.metadata?.nombre_tecnico), '→ String limpio:', JSON.stringify(nombreTecnico));
+                console.log('🔢 ID Técnico en Ticket (raw):', JSON.stringify(rawId), '→ typeof:', typeof rawId, '→ String limpio:', JSON.stringify(idTecnico));
+                console.log('📧 Email Técnico en Ticket:', JSON.stringify(emailTecnico) || '(vacío)');
+                console.log('🔡 normNombre (para match):', JSON.stringify(normNombre) || '(VACÍO — saltará estrategias 1-3)');
+                console.log('👥 platformUsers cargados:', platformUsers.length);
+                console.log('🗝️ Claves userByKey (muestra 15):', [...userByKey.keys()].slice(0, 15));
+                console.log('🗂️ metadata completa:', JSON.stringify(p.metadata ?? {}));
+            }
+
+            // ── ESTRATEGIA PRIMARIA: nombre_tecnico es la llave principal ──────
+            // El id_tecnico puede ser null — el nombre manda sobre el ID.
+
+            // 1. Nombre exacto normalizado → map (full_name, display_name, wisphub_id)
+            if (!assignedUser && normNombre) {
+                const candidate = userByKey.get(normNombre) ?? null;
+                if (isDeep) console.log(`  [S1] nombre_exacto "${normNombre}" →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                if (candidate) { assignedUser = candidate; matchSource = `nombre_exacto="${nombreTecnico}"`; }
+            }
+
+            // 2. Nombre parcial: el nombre del ticket contiene el full_name del perfil
+            if (!assignedUser && normNombre) {
+                const candidate = platformUsers.find(u => {
+                    const uNorm = normalizeText(u.full_name || u.display_name || '');
+                    return uNorm && normNombre.includes(uNorm);
+                }) ?? null;
+                if (isDeep) console.log(`  [S2] nombre_contiene →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                if (candidate) { assignedUser = candidate; matchSource = `nombre_contiene="${nombreTecnico}"`; }
+            }
+
+            // 3. Full_name del perfil contiene el nombre del ticket (orden inverso)
+            if (!assignedUser && normNombre) {
+                const candidate = platformUsers.find(u => {
+                    const uNorm = normalizeText(u.full_name || u.display_name || '');
+                    return uNorm && uNorm.includes(normNombre);
+                }) ?? null;
+                if (isDeep) console.log(`  [S3] nombre_invertido →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                if (candidate) { assignedUser = candidate; matchSource = `nombre_invertido="${nombreTecnico}"`; }
+            }
+
+            // ── ESTRATEGIAS SECUNDARIAS: email, ID, workitems ─────────────────
+
+            // 4. email_tecnico directo
+            if (!assignedUser && emailTecnico) {
+                const candidate = userByKey.get(emailTecnico.toLowerCase()) ?? null;
+                if (isDeep) console.log(`  [S4] email_tecnico "${emailTecnico}" →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                if (candidate) { assignedUser = candidate; matchSource = `email_tecnico="${emailTecnico}"`; }
+            }
+
+            // 5. wisphub_id vs email_tecnico
+            if (!assignedUser && emailTecnico) {
+                const candidate = platformUsers.find(u =>
+                    u.wisphub_id && String(u.wisphub_id).trim().toLowerCase() === emailTecnico.toLowerCase()
+                ) ?? null;
+                if (isDeep) console.log(`  [S5] wisphub_id≈email →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                if (candidate) { assignedUser = candidate; matchSource = `wisphub_id≈email="${emailTecnico}"`; }
+            }
+
+            // 6. id_tecnico numérico (String-safe: "123" === "123" aunque venga como number)
+            if (!assignedUser && idTecnico) {
+                const candidate = userByKey.get(idTecnico.toLowerCase()) ?? null;
+                if (isDeep) console.log(`  [S6] id_tecnico "${idTecnico}" en mapa →`, candidate ? `✅ ${candidate.full_name}` : '❌ no encontrado');
+                // Búsqueda adicional por wisphub_id directo (recorre array si el mapa no lo tiene)
+                const candidateWH = !candidate
+                    ? platformUsers.find(u => String(u.wisphub_id ?? '').trim() === idTecnico) ?? null
+                    : null;
+                if (isDeep && candidateWH) console.log(`  [S6b] wisphub_id directo "${idTecnico}" →`, `✅ ${candidateWH.full_name}`);
+                const final = candidate ?? candidateWH;
+                if (final) { assignedUser = final; matchSource = `id_tecnico="${idTecnico}"`; }
+            }
+
+            // 7. participant_id de workitems (UUID / email / wisphub_id)
+            if (!assignedUser) {
+                const allWorkItems = (p.workflow_activities || []).flatMap((a: any) => a.workflow_workitems || []);
+                for (const wi of allWorkItems) {
+                    if (!wi.participant_id) continue;
+                    const candidate = userByKey.get(String(wi.participant_id).toLowerCase().trim()) ?? null;
+                    if (candidate) { assignedUser = candidate; matchSource = `participant_id="${wi.participant_id}"`; break; }
+                }
+                if (isDeep) console.log(`  [S7] workitems(${allWorkItems.length}) →`, assignedUser ? `✅ ${assignedUser.full_name} via ${matchSource}` : '❌ sin match');
+            }
+
+            // Inyección de ubicación (String explícito, sin utilidad intermedia)
+            const loc = assignedUser?.strategic_location
+                ? String(assignedUser.strategic_location).toLowerCase().trim()
+                : null;
+
+            const rawWisphubName = nombreTecnico || emailTecnico;
+
+            // ── LOG EXTREMO: resumen de decisión ──────────────────────────────
+            if (isDeep) {
+                console.log('─────────────────────────────────────────');
+                console.log('👤 Usuario Encontrado:', assignedUser
+                    ? `${assignedUser.full_name || assignedUser.display_name} (via ${matchSource})`
+                    : 'NADIE');
+                console.log('📍 Ubicación del Usuario:', assignedUser
+                    ? (assignedUser.strategic_location ?? '⚠️ null — campo strategic_location NO configurado en perfil')
+                    : 'N/A — sin match');
+                const tabResult = loc === 'campo'
+                    ? '→ CAMPO ✅'
+                    : loc === 'oficina'
+                        ? '→ OFICINA (strategic_location=oficina)'
+                        : assignedUser
+                            ? '→ OFICINA ⚠️ (usuario encontrado pero strategic_location es null/vacío)'
+                            : '→ OFICINA (sin match de usuario)';
+                console.log(`🎯 Resultado del Filtro: ${tabResult}`);
+                if (loc !== 'campo' && assignedUser) {
+                    console.warn(`  ⚠️ ACCIÓN: ir a Configuración → perfil de "${assignedUser.full_name}" → cambiar Ubicación Estratégica a "Campo"`);
+                }
+                console.groupEnd();
+            }
+
+            return {
+                ...p,
+                __assignedUser:      assignedUser,
+                __strategicLocation: loc,
+                __unmatched:         !assignedUser,
+                __techDisplayName:   rawWisphubName || assignedUser?.display_name || '',
+            };
+        });
+
+        // Filtro por pestaña — exactamente como se especificó
+        const byTab = enriched.filter(p => {
+            // Normalización defensiva doble: el campo ya viene en lowercase,
+            // pero cubrimos el caso donde la BD guardó el string literal "null"
+            const location = p.__strategicLocation
+                ? String(p.__strategicLocation).toLowerCase().trim()
+                : null;
+
+            if (activeTab === 'campo') {
+                return location === 'campo';
+            }
+
+            if (activeTab === 'oficina') {
+                return location === 'oficina' || !location || location === 'null';
+            }
+
+            return false;
+        });
+
+        // Filtro por técnico en barra de búsqueda (5 campos)
+        if (!filterTech.trim()) return byTab;
+        const q = normalizeText(filterTech);
+        return byTab.filter(p =>
+            normalizeText(p.__techDisplayName).includes(q) ||
+            normalizeText(p.metadata?.email_tecnico  || '').includes(q) ||
+            normalizeText(p.metadata?.nombre_tecnico || '').includes(q) ||
+            normalizeText(p.__assignedUser?.email    || '').includes(q) ||
+            normalizeText(String(p.__assignedUser?.wisphub_id || '')).includes(q)
+        );
+    }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterTech]);
+
+    // ── Conteos por pestaña (para badge) — sin afectar filtered
+    const tabCounts = useMemo(() => {
+        if (!platformUsersReady || processes.length === 0) return { campo: 0, oficina: 0 };
+        return processes.reduce(
+            (acc, p) => {
+                // reutilizar la misma lógica de enriquecimiento (solo ubicación)
+                const nombreTecnico = p.metadata?.nombre_tecnico || '';
+                const normNombre = normalizeText(nombreTecnico);
+                let assignedUser: any = null;
+                if (normNombre) {
+                    assignedUser = userByKey.get(normNombre)
+                        ?? platformUsers.find(u => {
+                            const uNorm = normalizeText(u.full_name || u.display_name || '');
+                            return uNorm && (normNombre.includes(uNorm) || uNorm.includes(normNombre));
+                        });
+                }
+                const loc = assignedUser?.strategic_location
+                    ? String(assignedUser.strategic_location).toLowerCase().trim()
+                    : null;
+                if (loc === 'campo') acc.campo++;
+                else acc.oficina++;
+                return acc;
+            },
+            { campo: 0, oficina: 0 }
+        );
+    }, [processes, platformUsers, userByKey, platformUsersReady]);
 
     // ── Selección bulk
     const allSelected = filtered.length > 0 && filtered.every(p => selectedIds.has(p.id));
@@ -146,6 +483,7 @@ export function OperationsSupervision() {
         setSelectedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
     };
 
+    // ── Reasignación masiva con reporte por lote
     const handleBulkReassign = async () => {
         if (!bulkTech || selectedIds.size === 0) return;
         setBulkReassigning(true);
@@ -161,17 +499,103 @@ export function OperationsSupervision() {
         const settled = await Promise.allSettled(updates);
         const ok = settled.filter(r => r.status === 'fulfilled').length;
         const fail = settled.length - ok;
-        setBulkResult(`${ok} ticket${ok !== 1 ? 's' : ''} reasignado${ok !== 1 ? 's' : ''} a ${bulkTech}${fail > 0 ? ` · ${fail} fallaron` : ''}.`);
+        setBulkResult(
+            `✅ ${ok} ticket${ok !== 1 ? 's' : ''} reasignado${ok !== 1 ? 's' : ''} a ${bulkTech}` +
+            (fail > 0 ? ` · ❌ ${fail} fallaron` : '')
+        );
         setSelectedIds(new Set());
         setBulkTech('');
         setBulkReassigning(false);
         loadPage();
     };
 
-    const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+    // ── Derivar ticket a Campo
+    const handleTransfer = async () => {
+        if (!transferTarget || transferNote.trim().length < 50 || !transferTech) return;
+        setTransferring(true);
+        try {
+            await supabase
+                .from('workflow_processes')
+                .update({
+                    metadata: {
+                        ...transferTarget.metadata,
+                        mode: 'operativo',
+                        transfer_note: transferNote.trim(),
+                        transferred_from: 'oficina',
+                        transferred_at: new Date().toISOString(),
+                        remote_tests_done: remoteTestsDone,
+                        field_technician: transferTech,
+                    },
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', transferTarget.id);
+
+            setTransferTarget(null);
+            setTransferNote('');
+            setTransferTech('');
+            setRemoteTestsDone([]);
+            loadPage();
+        } finally {
+            setTransferring(false);
+        }
+    };
+
+    const totalPages = Math.ceil(totalCount / pageSize);
+
+    // ── Combobox: usuarios que coinciden con lo escrito
+    const bulkDropdownUsers = bulkTech.length > 0
+        ? platformUsers
+            .filter(u =>
+                (u.display_name?.toLowerCase().includes(bulkTech.toLowerCase()) ||
+                 u.email?.toLowerCase().includes(bulkTech.toLowerCase())) &&
+                u.email !== bulkTech
+            )
+            .slice(0, 8)
+        : [];
+
+    // ── Técnicos de campo para el modal de transferencia
+    const fieldTechnicians = platformUsers.filter(u =>
+        u.strategic_location === 'campo'
+    );
 
     return (
         <div className="space-y-6">
+            {/* ── Pestañas Campo / Oficina ── */}
+            <div className="flex gap-1 border-b border-zinc-200">
+                <button
+                    onClick={() => { setActiveTab('campo'); setSelectedIds(new Set()); }}
+                    className={clsx(
+                        'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
+                        activeTab === 'campo'
+                            ? 'border-zinc-900 text-zinc-900'
+                            : 'border-transparent text-zinc-400 hover:text-zinc-600'
+                    )}
+                >
+                    <Zap size={12} /> Campo
+                    {tabCounts.campo > 0 && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
+                            {tabCounts.campo}
+                        </span>
+                    )}
+                </button>
+                <button
+                    onClick={() => { setActiveTab('oficina'); setSelectedIds(new Set()); }}
+                    className={clsx(
+                        'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
+                        activeTab === 'oficina'
+                            ? 'border-zinc-900 text-zinc-900'
+                            : 'border-transparent text-zinc-400 hover:text-zinc-600'
+                    )}
+                >
+                    <Building2 size={12} /> Oficina
+                    {tabCounts.oficina > 0 && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
+                            {tabCounts.oficina}
+                        </span>
+                    )}
+                </button>
+            </div>
+
             <OperationsHeader
                 title="Supervisión"
                 description="Consola de administración y seguimiento de procesos operativos."
@@ -247,25 +671,55 @@ export function OperationsSupervision() {
                         <option value="no">Solo Internos N1</option>
                     </select>
 
+                    {/* Selector de registros por página */}
+                    <select
+                        value={pageSize}
+                        onChange={e => { setPageSize(Number(e.target.value) as 25 | 50 | 100); setPage(0); }}
+                        className="bg-white border border-zinc-200 rounded-xl py-2 px-3 text-xs font-bold outline-none focus:border-zinc-400 cursor-pointer text-zinc-700"
+                    >
+                        <option value={25}>25 / pág</option>
+                        <option value={50}>50 / pág</option>
+                        <option value={100}>100 / pág</option>
+                    </select>
+
                     <span className="ml-auto text-[11px] font-bold text-zinc-400">
                         {totalCount.toLocaleString()} registros
                     </span>
                 </div>
             </div>
 
-            {/* ── Bulk reassign panel ── */}
+            {/* ── Panel de reasignación masiva ── */}
             {selectedIds.size > 0 && (
                 <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
                     <span className="text-xs font-black text-indigo-700 uppercase">
                         {selectedIds.size} ticket{selectedIds.size !== 1 ? 's' : ''} seleccionado{selectedIds.size !== 1 ? 's' : ''}
                     </span>
-                    <input
-                        type="text"
-                        placeholder="Nuevo técnico / email..."
-                        value={bulkTech}
-                        onChange={e => setBulkTech(e.target.value)}
-                        className="flex-1 min-w-[180px] border border-indigo-300 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-                    />
+
+                    {/* Combobox autocomplete */}
+                    <div className="relative flex-1 min-w-[220px]">
+                        <input
+                            type="text"
+                            placeholder="Buscar técnico por nombre o email..."
+                            value={bulkTech}
+                            onChange={e => { setBulkTech(e.target.value); setBulkResult(null); }}
+                            className="w-full border border-indigo-300 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
+                        />
+                        {bulkDropdownUsers.length > 0 && (
+                            <ul className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl shadow-xl max-h-48 overflow-y-auto">
+                                {bulkDropdownUsers.map(u => (
+                                    <li
+                                        key={u.id || u.email}
+                                        onMouseDown={() => setBulkTech(u.email || u.display_name)}
+                                        className="px-3 py-2 text-xs hover:bg-indigo-50 cursor-pointer flex items-center justify-between gap-2"
+                                    >
+                                        <span className="font-bold text-zinc-800">{u.display_name}</span>
+                                        <span className="text-zinc-400 font-mono truncate">{u.email}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+
                     <button
                         onClick={handleBulkReassign}
                         disabled={!bulkTech || bulkReassigning}
@@ -304,39 +758,52 @@ export function OperationsSupervision() {
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Responsable</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Estado</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">SLA</th>
+                                {activeTab === 'oficina' && (
+                                    <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Acción</th>
+                                )}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-zinc-100">
-                            {loading && processes.length === 0 ? (
+                            {!platformUsersReady ? (
                                 <tr>
-                                    <td colSpan={9} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
+                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center">
+                                        <div className="flex flex-col items-center gap-2">
+                                            <Loader2 size={18} className="animate-spin text-zinc-400" />
+                                            <span className="text-xs text-zinc-400 font-medium">Cargando mapa de técnicos...</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ) : loading && processes.length === 0 ? (
+                                <tr>
+                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
                                         Cargando datos operativos...
                                     </td>
                                 </tr>
                             ) : filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={9} className="p-12 text-center text-zinc-400 text-xs font-medium">
-                                        No se encontraron registros.
+                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center">
+                                        <div className="flex flex-col items-center gap-2">
+                                            <span className="text-xs text-zinc-400 font-medium">No se encontraron registros.</span>
+                                            {activeTab === 'campo' && processes.length > 0 && tabCounts.campo === 0 && (
+                                                <span className="text-[10px] text-amber-600 font-medium max-w-xs text-center">
+                                                    Ningún técnico tiene <code className="bg-amber-50 px-1 rounded border border-amber-200">strategic_location = campo</code> configurado. Ve a Configuración → perfil del técnico para asignarlo.
+                                                </span>
+                                            )}
+                                        </div>
                                     </td>
                                 </tr>
                             ) : (
                                 filtered.map(p => {
-                                    // ── Resolución de técnico
-                                    const currentWorkItems = (p.workflow_activities || [])
-                                        .filter((a: any) => a.status === 'Active')
-                                        .flatMap((a: any) => a.workflow_workitems)
-                                        .filter((wi: any) => wi.status === 'Active' || wi.status === 'PE');
-                                    const responsibleName = currentWorkItems.map((wi: any) => {
-                                        const u = platformUsers.find((user: any) =>
-                                            user.id === wi.participant_id || user.email === wi.participant_id
-                                        );
-                                        return u ? u.display_name : wi.participant_id;
-                                    }).join(', ') || p.metadata?.nombre_tecnico || 'POR ASIGNAR';
+                                    // Mostrar siempre el nombre original de WispHub
+                                    const responsibleName =
+                                        p.metadata?.nombre_tecnico ||
+                                        p.metadata?.email_tecnico ||
+                                        p.metadata?.tecnico?.nombre ||
+                                        'POR ASIGNAR';
 
-                                    // ── SLA dinámico
+                                    // SLA dinámico
                                     const ticketType = p.title?.split(' - ')[0] || p.metadata?.asunto || p.process_type || '';
                                     const sla = getSlaInfo(p.created_at, ticketType, slaMap);
-
                                     const isSelected = selectedIds.has(p.id);
 
                                     return (
@@ -412,7 +879,12 @@ export function OperationsSupervision() {
 
                                             {/* Responsable */}
                                             <td className="p-4 text-center">
-                                                <span className="text-[10px] font-bold text-zinc-600 uppercase truncate max-w-[120px] bg-zinc-50 px-2 py-1 rounded border border-zinc-200 block mx-auto">
+                                                <span className={clsx(
+                                                    'text-[10px] font-bold uppercase truncate max-w-[130px] px-2 py-1 rounded border block mx-auto',
+                                                    (p as any).__unmatched
+                                                        ? 'text-amber-700 bg-amber-50 border-amber-200'
+                                                        : 'text-zinc-600 bg-zinc-50 border-zinc-200'
+                                                )}>
                                                     {responsibleName}
                                                 </span>
                                             </td>
@@ -436,7 +908,6 @@ export function OperationsSupervision() {
                                             {/* SLA semáforo dinámico */}
                                             <td className="p-4 text-center">
                                                 <div className="flex flex-col items-center gap-1">
-                                                    {/* Barra de progreso */}
                                                     <div className="w-16 h-1.5 bg-zinc-100 rounded-full overflow-hidden">
                                                         <div
                                                             className={clsx(
@@ -464,6 +935,23 @@ export function OperationsSupervision() {
                                                     )}
                                                 </div>
                                             </td>
+
+                                            {/* Acción: Derivar a Campo (solo pestaña Oficina) */}
+                                            {activeTab === 'oficina' && (
+                                                <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
+                                                    <button
+                                                        onClick={() => {
+                                                            setTransferTarget(p);
+                                                            setTransferNote('');
+                                                            setTransferTech('');
+                                                            setRemoteTestsDone([]);
+                                                        }}
+                                                        className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-orange-50 text-orange-700 border border-orange-200 rounded-lg hover:bg-orange-100 transition-all mx-auto"
+                                                    >
+                                                        <ArrowRight size={10} /> Campo
+                                                    </button>
+                                                </td>
+                                            )}
                                         </tr>
                                     );
                                 })
@@ -513,6 +1001,142 @@ export function OperationsSupervision() {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Derivar a Campo ── */}
+            {transferTarget && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
+                        {/* Header */}
+                        <div className="bg-orange-50 border-b border-orange-100 px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-orange-100 flex items-center justify-center">
+                                    <ArrowRight size={16} className="text-orange-600" />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-black uppercase tracking-wide text-zinc-900">Derivar a Campo</h2>
+                                    <p className="text-[10px] text-zinc-500 font-mono">
+                                        #{transferTarget.reference_id || transferTarget.id.split('-')[0]}
+                                        {' · '}
+                                        {transferTarget.metadata?.nombre_cliente || transferTarget.title}
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setTransferTarget(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+                            {/* Checklist de pruebas remotas */}
+                            <div>
+                                <div className="flex items-center gap-2 mb-3">
+                                    <ClipboardList size={13} className="text-zinc-500" />
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                        Pruebas Remotas Realizadas
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-1 gap-2">
+                                    {REMOTE_TESTS.map(test => {
+                                        const checked = remoteTestsDone.includes(test);
+                                        return (
+                                            <label
+                                                key={test}
+                                                className={clsx(
+                                                    'flex items-center gap-3 px-3 py-2.5 rounded-xl border cursor-pointer transition-all',
+                                                    checked
+                                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                                        : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:border-zinc-300'
+                                                )}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={() => setRemoteTestsDone(prev =>
+                                                        checked ? prev.filter(t => t !== test) : [...prev, test]
+                                                    )}
+                                                    className="accent-emerald-500"
+                                                />
+                                                <span className="text-xs font-medium">{test}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Técnico de campo */}
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">
+                                    Técnico de Campo *
+                                </label>
+                                <select
+                                    value={transferTech}
+                                    onChange={e => setTransferTech(e.target.value)}
+                                    className="w-full border border-zinc-200 rounded-xl px-3 py-2.5 text-xs font-medium outline-none focus:border-zinc-400 bg-white"
+                                >
+                                    <option value="">Seleccionar técnico...</option>
+                                    {fieldTechnicians.map(u => (
+                                        <option key={u.id || u.email} value={u.email || u.id}>
+                                            {u.display_name} {u.email ? `— ${u.email}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Nota de transferencia (mínimo 50 chars) */}
+                            <div>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                        Nota de Transferencia *
+                                    </label>
+                                    <span className={clsx(
+                                        'text-[10px] font-bold font-mono',
+                                        transferNote.trim().length < 50 ? 'text-red-400' : 'text-emerald-500'
+                                    )}>
+                                        {transferNote.trim().length} / 50 mín.
+                                    </span>
+                                </div>
+                                <textarea
+                                    value={transferNote}
+                                    onChange={e => setTransferNote(e.target.value)}
+                                    rows={4}
+                                    placeholder="Describe las pruebas remotas realizadas, el diagnóstico y el motivo de la derivación a campo..."
+                                    className="w-full border border-zinc-200 rounded-xl px-3 py-2.5 text-xs font-medium outline-none focus:border-zinc-400 resize-none placeholder:text-zinc-300"
+                                />
+                                {transferNote.trim().length > 0 && transferNote.trim().length < 50 && (
+                                    <p className="text-[10px] text-red-500 font-medium mt-1">
+                                        Mínimo 50 caracteres requeridos para garantizar trazabilidad.
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="border-t border-zinc-100 px-6 py-4 flex items-center justify-between gap-3">
+                            <button
+                                onClick={() => setTransferTarget(null)}
+                                className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleTransfer}
+                                disabled={
+                                    transferring ||
+                                    !transferTech ||
+                                    transferNote.trim().length < 50
+                                }
+                                className="flex items-center gap-2 px-5 py-2.5 bg-orange-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                            >
+                                {transferring
+                                    ? <Loader2 size={13} className="animate-spin" />
+                                    : <ArrowRight size={13} />
+                                }
+                                Derivar a Campo
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
