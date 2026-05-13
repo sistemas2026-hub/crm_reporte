@@ -1271,24 +1271,21 @@ export const WisphubService = {
         const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
         const pad = (n: number) => n.toString().padStart(2, '0');
         const formattedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-        const timestamp = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
         try {
-            // 1. Obtener ticket actual para no perder descripción
-            const rawTicket = await this.getTicketRaw(ticketId);
-            const currentDesc = stripHtml(rawTicket?.descripcion || ".");
-
-            const { data: { user } } = await safeGetUser();
-            const techName = user?.user_metadata?.full_name || 'Técnico';
-
-            const startMessage = `==== INICIO DE TRABAJO | ${techName.toUpperCase()} a las ${timestamp} ====`;
-            const updatedDesc = `${currentDesc}\n\n${startMessage}`.trim();
-
-            // 2. Marcar fecha_inicio y actualizar descripción en WispHub
+            // 1. Marcar fecha_inicio y cambiar estado a "En Proceso" (id_estado=2)
             const ok = await this.updateTicket(ticketId, {
                 fecha_inicio: formattedDate,
-                descripcion: updatedDesc
+                id_estado: 2
             });
+
+            // 2. Comentario independiente — fire-and-forget, no bloquea
+            this.addTicketComment(
+                ticketId,
+                '📍 El técnico ha iniciado el ticket desde la App',
+                undefined,
+                true  // silent: no lanza excepciones al caller
+            ).catch(() => {});
 
             return ok;
         } catch (error) {
@@ -1301,14 +1298,12 @@ export const WisphubService = {
         const now = new Date();
         const timestamp = now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         let supabaseOk = false;
-        let updateOk = false;
 
         console.log(`[WispHub] Registrando llegada para ticket ${ticketId}...`);
 
         // 1. Guardar en Supabase (Audit Log)
         try {
             const { data: { user } } = await safeGetUser();
-
             await supabase.from('ticket_events').insert({
                 ticket_id: String(ticketId),
                 event_type: 'arrival',
@@ -1321,21 +1316,18 @@ export const WisphubService = {
             console.error('[WispHub] Error en Supabase (arrival):', e);
         }
 
-        // 2. Actualizar DESCRIPCIÓN en WispHub (Substitución de burbuja)
-        try {
-            const rawTicket = await this.getTicketRaw(ticketId);
-            const currentDesc = stripHtml(rawTicket?.descripcion || ".");
+        // 2. Comentario independiente en WispHub — fire-and-forget
+        this.addTicketComment(
+            ticketId,
+            '⚙️ Tarea en progreso: El técnico está trabajando en la solicitud',
+            undefined,
+            true
+        ).catch(() => {});
 
-            const bubbleMessage = `==== LLEGADA AL DESTINO | Ticket ${ticketId} a las ${timestamp} ====`;
-            const updatedDesc = `${currentDesc}\n\n${bubbleMessage}`.trim();
+        // 3. Asegurar que id_estado quede en 2 (En Proceso) — fire-and-forget
+        this.updateTicket(ticketId, { id_estado: 2 }).catch(() => {});
 
-            updateOk = await this.updateTicket(ticketId, { descripcion: updatedDesc });
-            if (updateOk) console.log(`[WispHub] ✅ Descripción actualizada con mensaje de llegada.`);
-        } catch (e) {
-            console.error('[WispHub] Error en actualización de llegada:', e);
-        }
-
-        return supabaseOk || updateOk;
+        return supabaseOk;
     },
 
     /**

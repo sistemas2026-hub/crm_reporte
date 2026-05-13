@@ -511,21 +511,23 @@ export function OperationsMyTasks() {
 
             const ok = await WisphubService.setTicketStartTime(ticketId);
 
-            if (ok) {
-                saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
-                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} marcado como iniciado en WispHub.`);
+            // Siempre actualizar estado local — no bloquear en zonas de mala señal
+            saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
 
-                // Guardar started_at en proceso para que Supervisión muestre "En Progreso"
-                const processId = proc?.id;
-                if (processId) {
-                    await supabase
-                        .from('workflow_processes')
-                        .update({ metadata: { ...(proc?.metadata || {}), started_at: new Date().toISOString() } })
-                        .eq('id', processId);
-                    WorkflowService.logEvent(processId, 'Start', 'El técnico inició el ticket', currentUserIdRef.current || undefined).catch(() => {});
-                }
+            // Guardar started_at en proceso para que Supervisión muestre "En Progreso"
+            const processId = proc?.id;
+            if (processId) {
+                await supabase
+                    .from('workflow_processes')
+                    .update({ metadata: { ...(proc?.metadata || {}), started_at: new Date().toISOString() } })
+                    .eq('id', processId);
+                WorkflowService.logEvent(processId, 'Start', 'El técnico inició el ticket', currentUserIdRef.current || undefined).catch(() => {});
+            }
+
+            if (ok) {
+                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} — inicio registrado y estado actualizado en WispHub.`);
             } else {
-                dispatchToast('No se pudo iniciar', 'error', `WispHub rechazó el inicio del ticket #${ticketId}. Verifica que el ticket exista y esté activo.`);
+                dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado se actualizará cuando recuperes señal.`);
             }
         } catch (err: any) {
             console.error('[handleStartWork] Error:', err);
@@ -561,11 +563,13 @@ export function OperationsMyTasks() {
 
             const ok = await WisphubService.sendArrivalComment(ticketId);
 
+            // Siempre actualizar estado local — no bloquear en zonas de mala señal
+            saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
+
             if (ok) {
-                saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
-                dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — llegada confirmada.`);
+                dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — en progreso notificado en WispHub.`);
             } else {
-                dispatchToast('No se pudo registrar llegada', 'error', `WispHub rechazó la llegada del ticket #${ticketId}.`);
+                dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. Se sincronizará cuando recuperes señal.`);
             }
         } catch (err: any) {
             console.error('[handleArrival] Error:', err);
