@@ -658,15 +658,17 @@ export const WorkflowService = {
 
             if (localError) throw localError;
 
-            // 3. Actualizar metadata del proceso con la potencia
-            if (processId && signalValue) {
+            // 3. Marcar proceso como Completado y actualizar id_estado en metadata
+            if (processId) {
                 await supabase
                     .from('workflow_processes')
-                    .update({ 
-                        metadata: { 
-                            ...currentMetadata, 
-                            potencia: signalValue 
-                        } 
+                    .update({
+                        status: 'Completed',
+                        metadata: {
+                            ...currentMetadata,
+                            id_estado: finalStatusId,
+                            ...(signalValue ? { potencia: signalValue } : {})
+                        }
                     })
                     .eq('id', processId);
             }
