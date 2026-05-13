@@ -3,7 +3,7 @@ import {
     Search, Calendar, RefreshCcw,
     ChevronLeft, ChevronRight, Users, Filter,
     CheckSquare, Square, AlertCircle, Loader2, X,
-    ArrowRight, Zap, ClipboardList, History, Clock, CheckCircle2
+    ArrowRight, Zap, ClipboardList, History, Clock, CheckCircle2, Activity
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
@@ -50,7 +50,7 @@ export function OperationsSupervision() {
     const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
 
     // ── Pestañas de estado
-    const [activeTab, setActiveTab] = useState<'todos' | 'pendientes' | 'en_progreso' | 'finalizados'>('todos');
+    const [activeTab, setActiveTab] = useState<'todos' | 'pendientes' | 'en_progreso' | 'en_validacion' | 'finalizados'>('todos');
 
     // ── Filtro de ubicación (campo / oficina / todos)
     const [filterLocation, setFilterLocation] = useState<'all' | 'campo' | 'oficina'>('all');
@@ -65,6 +65,11 @@ export function OperationsSupervision() {
     const [closeNote, setCloseNote] = useState('');
     const [closeStatusId, setCloseStatusId] = useState<3 | 4>(4);
     const [closing, setClosing] = useState(false);
+
+    // ── Validar ticket (supervisor)
+    const [validateTarget, setValidateTarget] = useState<any | null>(null);
+    const [validateNote, setValidateNote] = useState('');
+    const [validating, setValidating] = useState(false);
 
     // ── Filtros
     const [searchTerm, setSearchTerm] = useState('');
@@ -122,7 +127,9 @@ export function OperationsSupervision() {
                 table: 'workflow_processes',
             }, (payload) => {
                 setProcesses(prev =>
-                    prev.map(p => p.id === (payload.new as any).id ? { ...p, ...payload.new } : p)
+                    prev.map(p => p.id === (payload.new as any).id
+                        ? { ...p, ...payload.new, metadata: { ...(p.metadata || {}), ...((payload.new as any).metadata || {}) } }
+                        : p)
                 );
             })
             .subscribe();
@@ -445,13 +452,15 @@ export function OperationsSupervision() {
 
         const byTab = enriched.filter(p => {
             if (activeTab === 'todos') return true;
-            const isStarted  = isStartedFn(p);
-            const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+            const isStarted    = isStartedFn(p);
+            const isFinished   = p.status === 'Completed' || p.status === 'Cerrado'
                 || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
                 || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
-            if (activeTab === 'pendientes')  return !isFinished && !isStarted;
-            if (activeTab === 'en_progreso') return !isFinished && isStarted;
-            if (activeTab === 'finalizados') return isFinished;
+            const isValidation = !!p.metadata?.pending_validation && !isFinished;
+            if (activeTab === 'pendientes')    return !isFinished && !isStarted && !isValidation;
+            if (activeTab === 'en_progreso')   return !isFinished && isStarted && !isValidation;
+            if (activeTab === 'en_validacion') return isValidation;
+            if (activeTab === 'finalizados')   return isFinished;
             return true;
         });
 
@@ -478,15 +487,17 @@ export function OperationsSupervision() {
 
     // ── Conteos por pestaña de estado
     const tabCounts = useMemo(() => {
-        const counts = { todos: processes.length, pendientes: 0, en_progreso: 0, finalizados: 0 };
+        const counts = { todos: processes.length, pendientes: 0, en_progreso: 0, en_validacion: 0, finalizados: 0 };
         for (const p of processes) {
-            const isStarted  = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
-            const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+            const isStarted    = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
+            const isFinished   = p.status === 'Completed' || p.status === 'Cerrado'
                 || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
                 || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
-            if (isFinished)     counts.finalizados++;
-            else if (isStarted) counts.en_progreso++;
-            else                counts.pendientes++;
+            const isValidation = !!p.metadata?.pending_validation && !isFinished;
+            if (isFinished)        counts.finalizados++;
+            else if (isValidation) counts.en_validacion++;
+            else if (isStarted)    counts.en_progreso++;
+            else                   counts.pendientes++;
         }
         return counts;
     }, [processes]);
@@ -584,10 +595,11 @@ export function OperationsSupervision() {
             {/* ── Pestañas de estado + toggle campo/oficina ── */}
             <div className="flex items-center gap-1 border-b border-zinc-200">
                 {([
-                    { key: 'todos',       label: 'Todos',       icon: <Filter size={12} /> },
-                    { key: 'pendientes',  label: 'Pendientes',  icon: <Zap size={12} /> },
-                    { key: 'en_progreso', label: 'En Progreso', icon: <RefreshCcw size={12} /> },
-                    { key: 'finalizados', label: 'Finalizados', icon: <CheckSquare size={12} /> },
+                    { key: 'todos',          label: 'Todos',        icon: <Filter size={12} /> },
+                    { key: 'pendientes',     label: 'Pendientes',   icon: <Zap size={12} /> },
+                    { key: 'en_progreso',    label: 'En Progreso',  icon: <RefreshCcw size={12} /> },
+                    { key: 'en_validacion',  label: 'En Validación', icon: <Activity size={12} /> },
+                    { key: 'finalizados',    label: 'Finalizados',  icon: <CheckSquare size={12} /> },
                 ] as const).map(tab => (
                     <button
                         key={tab.key}
@@ -1011,12 +1023,22 @@ export function OperationsSupervision() {
                                                             || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
                                                         if (isFinished) return null;
                                                         return (
-                                                            <button
-                                                                onClick={() => { setCloseTarget(p); setCloseNote(''); setCloseStatusId(4); }}
-                                                                className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all w-full justify-center"
-                                                            >
-                                                                <CheckCircle2 size={10} /> Cerrar
-                                                            </button>
+                                                            <div className="flex flex-col gap-1 w-full">
+                                                                {p.metadata?.pending_validation && (
+                                                                    <button
+                                                                        onClick={() => { setValidateTarget(p); setValidateNote(''); }}
+                                                                        className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-violet-50 text-violet-700 border border-violet-200 rounded-lg hover:bg-violet-100 transition-all w-full justify-center"
+                                                                    >
+                                                                        <Activity size={10} /> Validar
+                                                                    </button>
+                                                                )}
+                                                                <button
+                                                                    onClick={() => { setCloseTarget(p); setCloseNote(''); setCloseStatusId(4); }}
+                                                                    className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all w-full justify-center"
+                                                                >
+                                                                    <CheckCircle2 size={10} /> Cerrar
+                                                                </button>
+                                                            </div>
                                                         );
                                                     })()}
                                                 </div>
@@ -1070,6 +1092,90 @@ export function OperationsSupervision() {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Validar Ticket (Supervisor) ── */}
+            {validateTarget && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
+                        <div className="bg-zinc-50 border-b border-zinc-200 px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center">
+                                    <Activity size={16} className="text-violet-600" />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-black uppercase tracking-wide text-zinc-900">Validar Ticket</h2>
+                                    <p className="text-[10px] text-zinc-500 font-mono">
+                                        #{validateTarget.reference_id || validateTarget.id.split('-')[0]}
+                                        {' · '}{validateTarget.metadata?.nombre_cliente || validateTarget.title}
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setValidateTarget(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="px-6 py-5 space-y-4">
+                            {validateTarget.metadata?.supervisor_validation_note === undefined && validateTarget.metadata?.pending_validation && (
+                                <div className="bg-violet-50 border border-violet-200 rounded-2xl px-4 py-3 text-[11px] text-violet-700 font-bold">
+                                    El técnico solicitó validación para este ticket.
+                                </div>
+                            )}
+                            <div>
+                                <label className="text-[11px] font-black text-zinc-700 uppercase tracking-widest block mb-2">
+                                    Respuesta del supervisor
+                                </label>
+                                <textarea
+                                    value={validateNote}
+                                    onChange={e => setValidateNote(e.target.value)}
+                                    placeholder="Describe la validación realizada..."
+                                    rows={4}
+                                    className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-xs font-medium outline-none focus:bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-100 transition-all resize-none placeholder:text-zinc-300"
+                                    autoFocus
+                                />
+                                <span className={clsx('text-[10px] font-bold font-mono', validateNote.trim().length < 5 ? 'text-red-400' : 'text-emerald-500')}>
+                                    {validateNote.trim().length} / 5 mín.
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-zinc-100 px-6 py-4 flex items-center justify-between gap-3">
+                            <button onClick={() => setValidateTarget(null)} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors">
+                                Cancelar
+                            </button>
+                            <button
+                                disabled={validating || validateNote.trim().length < 5}
+                                onClick={async () => {
+                                    setValidating(true);
+                                    try {
+                                        const ticketId = validateTarget.reference_id;
+                                        const ok = await WorkflowService.supervisorValidateProcess(
+                                            validateTarget.id,
+                                            String(ticketId),
+                                            validateNote.trim()
+                                        );
+                                        if (ok) {
+                                            setProcesses(prev => prev.map(p =>
+                                                p.id === validateTarget.id
+                                                    ? { ...p, metadata: { ...p.metadata, pending_validation: false, supervisor_validated: true } }
+                                                    : p
+                                            ));
+                                            setValidateTarget(null);
+                                            setValidateNote('');
+                                        }
+                                    } finally {
+                                        setValidating(false);
+                                    }
+                                }}
+                                className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                            >
+                                {validating ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
+                                Confirmar Validación
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Modal: Cerrar Ticket (Supervisor) ── */}
             {closeTarget && (

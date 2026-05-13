@@ -44,7 +44,7 @@ export function OperationsMyTasks() {
     const [syncing, setSyncing] = useState(false);
     const [myTasks, setMyTasks] = useState<any[]>([]);
     const [selectedTask, setSelectedTask] = useState<any | null>(null);
-    const [actionType, setActionType] = useState<'complete' | 'escalate' | null>(null);
+    const [actionType, setActionType] = useState<'complete' | 'escalate' | 'validate' | null>(null);
     const [comment, setComment] = useState('');
     const [signal, setSignal] = useState(''); // Potencia Óptica
     const [targetTechnician, setTargetTechnician] = useState('');
@@ -509,7 +509,13 @@ export function OperationsMyTasks() {
                 }
             }
 
-            const ok = await WisphubService.setTicketStartTime(ticketId);
+            // Intentar PUT completo (cambia estado a En Proceso + agrega nota en WispHub)
+            // Fallback: si falla, PATCH solo fecha_inicio (al menos registra el inicio)
+            let ok = await WorkflowService.markTicketInProgress(ticketId, 'INICIO DE TRABAJO');
+            if (!ok) {
+                console.warn('[handleStartWork] PUT falló, usando fallback PATCH fecha_inicio');
+                ok = await WisphubService.setTicketStartTime(ticketId);
+            }
 
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
@@ -568,6 +574,7 @@ export function OperationsMyTasks() {
 
         setActioningTicket(ticketId + '_arrive');
         try {
+
             // Inyección de identidad igual que en Iniciar
             if (wi.__fromNameQuery) {
                 const ownerId = wi.__ownerId || currentUserIdRef.current;
@@ -579,7 +586,24 @@ export function OperationsMyTasks() {
                 }
             }
 
-            const ok = await WisphubService.sendArrivalComment(ticketId);
+            // Mismo patrón: PUT completo primero, fallback a PATCH fecha_inicio
+            let ok = await WorkflowService.markTicketInProgress(ticketId, 'LLEGADA AL SITIO');
+            if (!ok) {
+                console.warn('[handleArrival] PUT falló, usando fallback PATCH fecha_inicio');
+                ok = await WisphubService.setTicketStartTime(ticketId);
+            }
+
+            // Audit log local — independiente de WispHub
+            try {
+                const { data: { user } } = await supabase.auth.getUser();
+                await supabase.from('ticket_events').insert({
+                    ticket_id: String(ticketId),
+                    event_type: 'arrival',
+                    technician_id: user?.id,
+                    created_at: new Date().toISOString(),
+                    metadata: { timestamp_display: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) }
+                });
+            } catch { /* no bloquear */ }
 
             // Siempre actualizar estado local
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
@@ -600,7 +624,7 @@ export function OperationsMyTasks() {
                 WorkflowService.logEvent(
                     procArrival?.id,
                     'Arrival',
-                    'Técnico llegó al sitio — fecha_inicio actualizada en WispHub.',
+                    'Técnico llegó al sitio — ticket marcado En Proceso en WispHub.',
                     currentUserIdRef.current || undefined
                 ).catch(() => {});
                 dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — llegada confirmada en WispHub.`);
@@ -614,6 +638,7 @@ export function OperationsMyTasks() {
             setActioningTicket(null);
         }
     };
+
 
     // Nueva función para sincronizar el estado visual con los eventos reales en Supabase
     const syncTimelineWithEvents = async () => {
@@ -1051,6 +1076,22 @@ export function OperationsMyTasks() {
                                             </button>
                                         )}
 
+                                        {/* Pasar a Validar — visible cuando ya llegó y no está en validación */}
+                                        {timelineStatus[ticketId]?.arrived && !proc?.metadata?.pending_validation && (
+                                            <button
+                                                onClick={() => { setSelectedTask(wi); setActionType('validate'); }}
+                                                className="px-3 py-2 bg-violet-50 text-violet-600 border border-violet-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0 hover:bg-violet-100"
+                                                title="Enviar al supervisor para validación"
+                                            >
+                                                <Activity size={12} /> Validar
+                                            </button>
+                                        )}
+                                        {proc?.metadata?.pending_validation && (
+                                            <span className="px-3 py-2 bg-violet-50 text-violet-400 border border-violet-100 rounded-xl text-[10px] font-bold uppercase flex items-center gap-1.5 shrink-0">
+                                                <Activity size={12} /> En Validación
+                                            </span>
+                                        )}
+
                                         {/* RBAC: Permisos Gestionados */}
                                         {canEditTicket(userProfile, wi) && (
                                             <button
@@ -1103,8 +1144,8 @@ export function OperationsMyTasks() {
                         <div className="p-5 border-b border-zinc-100 flex justify-between items-center bg-white shrink-0">
                             <div>
                                 <h3 className="text-base font-bold uppercase flex items-center gap-2 text-zinc-900 tracking-tight">
-                                    {actionType === 'complete' ? <CheckCircle2 className="text-emerald-600" size={18} /> : <AlertTriangle className="text-orange-500" size={18} />}
-                                    {actionType === 'complete' ? 'Finalizar Tarea' : 'Escalar Proceso'}
+                                    {actionType === 'complete' ? <CheckCircle2 className="text-emerald-600" size={18} /> : actionType === 'validate' ? <Activity className="text-violet-600" size={18} /> : <AlertTriangle className="text-orange-500" size={18} />}
+                                    {actionType === 'complete' ? 'Finalizar Tarea' : actionType === 'validate' ? 'Pasar a Validación' : 'Escalar Proceso'}
                                 </h3>
                                 <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">
                                     Ticket #{selectedTask.workflow_activities?.workflow_processes?.reference_id}
@@ -1116,8 +1157,8 @@ export function OperationsMyTasks() {
                         </div>
 
                         <div className="p-6 space-y-6 bg-white overflow-y-auto">
-                            {/* Materiales Frecuentes - Solo en Finalizar */}
-                            {actionType === 'complete' && (
+                            {/* Materiales + Potencia + Estado — Finalizar y Validar */}
+                            {(actionType === 'complete' || actionType === 'validate') && (
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between">
                                         <label className="text-[11px] font-black text-zinc-800 uppercase flex items-center gap-2 tracking-widest">
@@ -1223,11 +1264,11 @@ export function OperationsMyTasks() {
                             <div className="space-y-2">
                                 <label className="text-[11px] font-black text-zinc-800 uppercase flex items-center gap-2 tracking-widest">
                                     <MessageSquare size={14} className="text-zinc-400" />
-                                    {actionType === 'complete' ? 'Reporte Técnico' : 'Motivo del escalamiento'}
+                                    {actionType === 'complete' ? 'Reporte Técnico' : actionType === 'validate' ? 'Nota del técnico' : 'Motivo del escalamiento'}
                                 </label>
                                 <textarea
                                     className="w-full h-32 bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-xs font-medium outline-none focus:bg-white focus:border-zinc-900 focus:ring-4 focus:ring-zinc-100 transition-all resize-none placeholder:text-zinc-300 text-zinc-700 leading-relaxed"
-                                    placeholder={actionType === 'complete' ? 'Detalla la solución técnica aplicada...' : 'Explica el motivo del escalamiento...'}
+                                    placeholder={actionType === 'complete' ? 'Detalla la solución técnica aplicada...' : actionType === 'validate' ? 'Describe el trabajo realizado para validación...' : 'Explica el motivo del escalamiento...'}
                                     value={comment}
                                     onChange={(e) => setComment(e.target.value)}
                                     autoFocus
@@ -1497,6 +1538,19 @@ export function OperationsMyTasks() {
                                             }
                                         }
 
+                                        if (actionType === 'validate') {
+                                            const proc = selectedTask.workflow_activities?.workflow_processes;
+                                            const processId = proc?.id;
+                                            if (processId && ticketId) {
+                                                const firstFile = evidenceFiles[0] || undefined;
+                                                success = await WorkflowService.requestValidation(processId, String(ticketId), comment, firstFile);
+                                                if (success) {
+                                                    window.dispatchEvent(new CustomEvent('supervision:processes-updated', { detail: { ticketId } }));
+                                                    dispatchToast('Enviado a validación', 'success', `Ticket #${ticketId} — el supervisor fue notificado.`);
+                                                }
+                                            }
+                                        }
+
                                         if (success) {
                                             if (actionType === 'escalate') {
                                                 // Remoción instantánea del estado local
@@ -1523,8 +1577,8 @@ export function OperationsMyTasks() {
                                 }}
                                 className={clsx(
                                     "w-full py-4 rounded-2xl font-black uppercase text-xs flex items-center justify-center gap-3 transition-all shadow-xl tracking-widest",
-                                    actionType === 'complete'
-                                        ? "bg-zinc-900 text-white hover:bg-black hover:shadow-zinc-900/30"
+                                    actionType === 'complete' ? "bg-zinc-900 text-white hover:bg-black hover:shadow-zinc-900/30"
+                                        : actionType === 'validate' ? "bg-violet-600 text-white hover:bg-violet-700 shadow-violet-500/30"
                                         : "bg-orange-500 text-white hover:bg-orange-600 shadow-orange-500/30",
                                     (!comment.trim() || processing) && "opacity-50 cursor-not-allowed scale-95"
                                 )}
@@ -1534,6 +1588,7 @@ export function OperationsMyTasks() {
                                 ) : (
                                     <>
                                         {(() => {
+                                            if (actionType === 'validate') return 'Enviar a Validación';
                                             if (actionType !== 'complete') return 'Confirmar Escalamiento';
 
                                             const asunto = selectedTask?.workflow_activities?.workflow_processes?.metadata?.asunto?.toUpperCase() || '';

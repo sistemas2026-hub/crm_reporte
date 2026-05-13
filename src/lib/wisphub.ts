@@ -1199,6 +1199,53 @@ export const WisphubService = {
         }
     },
 
+    /**
+     * POST /tickets/{id}/respuesta/ — agrega respuesta y opcionalmente cambia estado/prioridad/falla.
+     * Endpoint oficial WispHub API (api.wisphub.net).
+     */
+    async postTicketResponse(
+        ticketId: string | number,
+        respuesta: string,
+        options: { estado?: number; prioridad?: number; falla?: string } = {},
+        file?: File | Blob
+    ): Promise<boolean> {
+        try {
+            const fd = new FormData();
+            // WispHub rechaza HTML — enviar texto plano
+            fd.append('respuesta', respuesta);
+            if (options.estado !== undefined) fd.append('ticket-estado', String(options.estado));
+            if (options.prioridad !== undefined) fd.append('ticket-prioridad', String(options.prioridad));
+            if (options.falla) fd.append('ticket-falla', options.falla);
+            if (file) {
+                const allowedExts = ['docx', 'doc', 'pdf', 'png', 'jpeg', 'jpg', 'gif'];
+                let fileName = 'archivo.jpg';
+                if (file instanceof File && file.name) {
+                    const parts = file.name.split('.');
+                    let ext = parts.pop()?.toLowerCase() || 'jpg';
+                    const base = parts.join('_').replace(/\W/g, '') || 'archivo';
+                    if (!allowedExts.includes(ext)) ext = 'jpg';
+                    fileName = `${base}.${ext}`;
+                }
+                fd.append('archivo', file, fileName);
+            }
+
+            console.log('[WispHub.postTicketResponse] POST /respuesta/', { ticketId, estado: options.estado });
+            const response = await safeFetch(`${BASE_URL}/tickets/${ticketId}/respuesta/`, {
+                method: 'POST',
+                body: fd
+            });
+            console.log(`[WispHub.postTicketResponse] ${response.ok ? '✅' : '❌'} status=${response.status}`);
+            if (!response.ok) {
+                const err = await response.text().catch(() => '');
+                console.error('[WispHub.postTicketResponse] Error body:', err.substring(0, 300));
+            }
+            return response.ok;
+        } catch (e) {
+            console.error('[WispHub.postTicketResponse] ERROR:', e);
+            return false;
+        }
+    },
+
     async updateTicket(ticketId: string | number, data: any, method: 'PATCH' | 'PUT' = 'PATCH'): Promise<boolean> {
         console.log('[WisphubService.updateTicket] 🚀 Iniciando:', { ticketId, method, dataKeys: Object.keys(data) });
         try {

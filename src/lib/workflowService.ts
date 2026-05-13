@@ -579,44 +579,36 @@ export const WorkflowService = {
             }
 
             const timestamp = new Date().toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Bogota' }).replace(',', '');
-            const statusLabel = statusId === 3 ? "FINALIZADO" : "ACTUALIZADO";
-            const commentText = comment || `Ticket ${statusLabel.toLowerCase()}`;
-            const fancyComment = `==== ${statusLabel}: ${commentText} | Responsable: ${actorName.toUpperCase()} | ${timestamp} ====`;
+            const statusLabel = statusId === 3 ? "FINALIZADO" : "CERRADO";
+            const commentText = comment || `Ticket ${statusLabel.toLowerCase()} por ${actorName}`;
+            const responseMsg = `${commentText} | ${actorName.toUpperCase()} | ${timestamp}`;
 
-            // 5. Construir Payload Completo (PUT LIMPIO + descripción actualizada)
-            const cleanBase = stripHtml(rawTicket.descripcion || ".");
-            const updatedDesc = `${cleanBase}\n\n${fancyComment}`.trim();
+            const prioridadNum = priorityMap[rawTicket.prioridad] || 2;
 
+            // 5. PUT limpio — solo cambia estado + fecha_final, sin tocar descripción
             const payload: any = {
                 servicio: rawTicket.servicio?.id_servicio || rawTicket.servicio?.id || rawTicket.servicio,
                 asunto: currentAsunto,
                 asuntos_default: safeAsunto,
-                descripcion: updatedDesc,
-                prioridad: priorityMap[rawTicket.prioridad] || 2,
+                descripcion: stripHtml(rawTicket.descripcion || '.'),
+                prioridad: prioridadNum,
                 estado: statusId,
                 tecnico: Number(finalTechId),
                 departamento: rawTicket.departamento || "Soporte Técnico",
                 departamentos_default: rawTicket.departamento || "Soporte Técnico"
             };
 
-            // Inyectar fecha_fin si se está finalizando (Estado 3)
             if (statusId === 3) {
                 const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
                 const pad = (n: number) => n.toString().padStart(2, '0');
-                // Formato YYYY-MM-DD HH:MM:SS
                 payload.fecha_final = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-                console.log('[updateTicketStatus] 📅 Fecha final inyectada:', payload.fecha_final);
             }
 
             if (options.file) {
                 payload.archivo_ticket = options.file;
-                console.log('[updateTicketStatus] 📎 Archivo adjunto detectado');
             }
 
-            console.log('[updateTicketStatus] 📦 Payload construido:', payload);
-
-            // 6. Actualizar ticket (Con descripción integrada y opcionalmente archivo)
-            console.log('[updateTicketStatus] 🔄 Actualizando ticket...');
+            console.log('[updateTicketStatus] 📦 Payload:', payload);
             const updateSuccess = await WisphubService.updateTicket(ticketId, payload, 'PUT');
 
             if (!updateSuccess) {
@@ -624,10 +616,127 @@ export const WorkflowService = {
                 return false;
             }
 
-            console.log('[updateTicketStatus] 🏁 Operación completada exitosamente');
+            // 6. Respuesta en el hilo del ticket (fire-and-forget)
+            WisphubService.postTicketResponse(ticketId, responseMsg, {
+                estado: statusId,
+                prioridad: prioridadNum,
+            }).catch(() => {});
+
+            console.log('[updateTicketStatus] 🏁 Completado');
             return true;
         } catch (e) {
             console.error('[updateTicketStatus] 💥 ERROR FATAL:', e);
+            return false;
+        }
+    },
+
+    async requestValidation(processId: string, ticketId: string, note: string, file?: File | Blob): Promise<boolean> {
+        try {
+            const rawTicket = await WisphubService.getTicketRaw(ticketId).catch(() => null);
+            const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
+            const prioridad = rawTicket ? (priorityMap[rawTicket.prioridad] || 2) : 2;
+            const estadoActual = rawTicket?.id_estado || rawTicket?.estado_id || 2;
+
+            const msg = note.trim() || 'Trabajo completado — pendiente de validación por supervisor';
+            await WisphubService.postTicketResponse(ticketId, msg, { estado: estadoActual, prioridad }, file).catch(() => {});
+
+            const { data: proc } = await supabase.from('workflow_processes').select('metadata').eq('id', processId).single();
+            await supabase.from('workflow_processes').update({
+                metadata: {
+                    ...(proc?.metadata || {}),
+                    pending_validation: true,
+                    validation_requested_at: new Date().toISOString(),
+                }
+            }).eq('id', processId);
+
+            await this.logEvent(processId, 'ValidationRequest', msg).catch(() => {});
+            return true;
+        } catch (e) {
+            console.error('[requestValidation] ERROR:', e);
+            return false;
+        }
+    },
+
+    async markTicketInProgress(ticketId: string | number, eventLabel?: string): Promise<boolean> {
+        console.log('[markTicketInProgress] 🚀 Marcando ticket en progreso:', ticketId, eventLabel || '');
+        try {
+            // Resolver nombre del actor para el mensaje
+            let actorName = 'Técnico';
+            try {
+                const { data: { user } } = await safeGetUser();
+                if (user) {
+                    const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single();
+                    actorName = profile?.full_name || user.email || 'Técnico';
+                }
+            } catch { /* usar fallback */ }
+
+            const msgMap: Record<string, string> = {
+                'INICIO DE TRABAJO': `El ticket ${ticketId} ha sido iniciado por ${actorName}`,
+                'LLEGADA AL SITIO':  `Técnico ${actorName} registró llegada al sitio — Ticket ${ticketId}`,
+            };
+            const msg = eventLabel ? (msgMap[eventLabel] || `${eventLabel} — Ticket ${ticketId} | ${actorName}`) : '';
+
+            // 1. PUT completo — cambia estado=2 + fecha_inicio (método confiable)
+            const rawTicket = await WisphubService.getTicketRaw(ticketId);
+            if (!rawTicket) {
+                console.error('[markTicketInProgress] ❌ No se pudo obtener ticket raw');
+                return false;
+            }
+
+            const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
+            const validSubjects = (WisphubService as any).TICKET_SUBJECTS || [];
+            const currentAsunto = rawTicket.asunto || "Otro Asunto";
+            const isAsuntoValid = validSubjects.some((s: string) => s.toLowerCase() === currentAsunto.toLowerCase());
+            const safeAsunto = isAsuntoValid ? currentAsunto : (validSubjects[0] || "Otro Asunto");
+
+            let finalTechId = rawTicket.tecnico_id;
+            if (!finalTechId || isNaN(Number(finalTechId))) {
+                try {
+                    const staff = await WisphubService.getStaff();
+                    const techName = rawTicket.tecnico || rawTicket.nombre_tecnico || '';
+                    const found = staff.find(s =>
+                        normalize(s.nombre) === normalize(techName) ||
+                        normalize(s.usuario) === normalize(techName) ||
+                        s.email === techName
+                    );
+                    finalTechId = found?.id || staff[0]?.id || 1;
+                } catch {
+                    finalTechId = 1;
+                }
+            }
+
+            const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+            const pad = (n: number) => n.toString().padStart(2, '0');
+            const fechaInicio = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+            const payload = {
+                servicio: rawTicket.servicio?.id_servicio || rawTicket.servicio?.id || rawTicket.servicio,
+                asunto: currentAsunto,
+                asuntos_default: safeAsunto,
+                descripcion: stripHtml(rawTicket.descripcion || '.'),
+                prioridad: priorityMap[rawTicket.prioridad] || 2,
+                estado: 2,
+                tecnico: Number(finalTechId),
+                departamento: rawTicket.departamento || "Soporte Técnico",
+                departamentos_default: rawTicket.departamento || "Soporte Técnico",
+                fecha_inicio: fechaInicio,
+            };
+
+            console.log('[markTicketInProgress] 📦 PUT payload:', payload);
+            const ok = await WisphubService.updateTicket(ticketId, payload, 'PUT');
+            console.log(`[markTicketInProgress] ${ok ? '✅ PUT OK' : '❌ PUT falló'}`);
+
+            // 2. POST /respuesta/ — ticket-estado y ticket-prioridad son requeridos
+            if (ok && msg) {
+                WisphubService.postTicketResponse(ticketId, msg, {
+                    estado: 2,
+                    prioridad: priorityMap[rawTicket.prioridad] || 2,
+                }).catch(() => {});
+            }
+
+            return ok;
+        } catch (e) {
+            console.error('[markTicketInProgress] 💥 ERROR:', e);
             return false;
         }
     },
@@ -995,10 +1104,43 @@ export const WorkflowService = {
             return false;
         }
     },
-    /**
-     * Cierre supervisado: el supervisor finaliza un proceso directamente desde la vista de Supervisión.
-     * No requiere workitem activo — opera sobre el process_id.
-     */
+
+    async supervisorValidateProcess(processId: string, ticketId: string, note: string): Promise<boolean> {
+        try {
+            const { data: { user } } = await safeGetUser();
+            let supervisorName = 'Supervisor';
+            if (user) {
+                const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single();
+                supervisorName = profile?.full_name || user.email || 'Supervisor';
+            }
+
+            const rawTicket = await WisphubService.getTicketRaw(ticketId).catch(() => null);
+            const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
+            const prioridad = rawTicket ? (priorityMap[rawTicket.prioridad] || 2) : 2;
+            const estadoActual = rawTicket?.id_estado || 2;
+
+            const msg = `Validado por ${supervisorName}: ${note.trim()}`;
+            await WisphubService.postTicketResponse(ticketId, msg, { estado: estadoActual, prioridad }).catch(() => {});
+
+            const { data: proc } = await supabase.from('workflow_processes').select('metadata').eq('id', processId).single();
+            await supabase.from('workflow_processes').update({
+                metadata: {
+                    ...(proc?.metadata || {}),
+                    pending_validation: false,
+                    supervisor_validated: true,
+                    supervisor_validation_note: note.trim(),
+                    supervisor_validated_at: new Date().toISOString(),
+                }
+            }).eq('id', processId);
+
+            await this.logEvent(processId, 'SupervisorValidation', msg).catch(() => {});
+            return true;
+        } catch (e) {
+            console.error('[supervisorValidateProcess] ERROR:', e);
+            return false;
+        }
+    },
+
     async supervisorCloseProcess(
         processId: string,
         resolution: string,
