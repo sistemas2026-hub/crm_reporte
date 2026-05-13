@@ -440,7 +440,9 @@ export function OperationsSupervision() {
         const byTab = enriched.filter(p => {
             if (activeTab === 'todos') return true;
             const isStarted  = isStartedFn(p);
-            const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
+            const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+                || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
+                || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
             if (activeTab === 'pendientes')  return !isFinished && !isStarted;
             if (activeTab === 'en_progreso') return !isFinished && isStarted;
             if (activeTab === 'finalizados') return isFinished;
@@ -473,7 +475,9 @@ export function OperationsSupervision() {
         const counts = { todos: processes.length, pendientes: 0, en_progreso: 0, finalizados: 0 };
         for (const p of processes) {
             const isStarted  = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
-            const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
+            const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+                || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
+                || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
             if (isFinished)     counts.finalizados++;
             else if (isStarted) counts.en_progreso++;
             else                counts.pendientes++;
@@ -909,7 +913,9 @@ export function OperationsSupervision() {
                                             {/* Estado */}
                                             <td className="p-4 text-center">
                                                 {(() => {
-                                                    const isFinished  = p.status === 'Completed' || p.status === 'Cerrado';
+                                                    const isFinished  = p.status === 'Completed' || p.status === 'Cerrado'
+                                                        || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
+                                                        || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
                                                     const isStarted   = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
                                                     const isEscalated = (p.escalation_level || 0) >= 2;
                                                     const label = isFinished ? (isEscalated ? 'Escalado' : 'Completado')
