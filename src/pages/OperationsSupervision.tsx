@@ -3,7 +3,7 @@ import {
     Search, Calendar, RefreshCcw,
     ChevronLeft, ChevronRight, Users, Filter,
     CheckSquare, Square, AlertCircle, Loader2, X,
-    ArrowRight, Zap, ClipboardList, History, Clock
+    ArrowRight, Zap, ClipboardList, History, Clock, CheckCircle2
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
@@ -59,6 +59,12 @@ export function OperationsSupervision() {
     const [historyProcess, setHistoryProcess] = useState<any | null>(null);
     const [historyLogs, setHistoryLogs] = useState<any[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
+
+    // ── Finalizar ticket (supervisor)
+    const [closeTarget, setCloseTarget] = useState<any | null>(null);
+    const [closeNote, setCloseNote] = useState('');
+    const [closeStatusId, setCloseStatusId] = useState<3 | 4>(4);
+    const [closing, setClosing] = useState(false);
 
     // ── Filtros
     const [searchTerm, setSearchTerm] = useState('');
@@ -979,21 +985,37 @@ export function OperationsSupervision() {
                                                 </div>
                                             </td>
 
-                                            {/* Historial */}
+                                            {/* Historial + Acciones */}
                                             <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
-                                                <button
-                                                    onClick={async () => {
-                                                        setHistoryProcess(p);
-                                                        setHistoryLogs([]);
-                                                        setHistoryLoading(true);
-                                                        const logs = await WorkflowService.getFullLogs(p.id);
-                                                        setHistoryLogs(logs);
-                                                        setHistoryLoading(false);
-                                                    }}
-                                                    className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-zinc-50 text-zinc-600 border border-zinc-200 rounded-lg hover:bg-zinc-100 transition-all mx-auto"
-                                                >
-                                                    <History size={10} /> Ver
-                                                </button>
+                                                <div className="flex flex-col gap-1 items-center">
+                                                    <button
+                                                        onClick={async () => {
+                                                            setHistoryProcess(p);
+                                                            setHistoryLogs([]);
+                                                            setHistoryLoading(true);
+                                                            const logs = await WorkflowService.getFullLogs(p.id);
+                                                            setHistoryLogs(logs);
+                                                            setHistoryLoading(false);
+                                                        }}
+                                                        className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-zinc-50 text-zinc-600 border border-zinc-200 rounded-lg hover:bg-zinc-100 transition-all w-full justify-center"
+                                                    >
+                                                        <History size={10} /> Ver
+                                                    </button>
+                                                    {(() => {
+                                                        const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+                                                            || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
+                                                            || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
+                                                        if (isFinished) return null;
+                                                        return (
+                                                            <button
+                                                                onClick={() => { setCloseTarget(p); setCloseNote(''); setCloseStatusId(4); }}
+                                                                className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all w-full justify-center"
+                                                            >
+                                                                <CheckCircle2 size={10} /> Cerrar
+                                                            </button>
+                                                        );
+                                                    })()}
+                                                </div>
                                             </td>
                                         </tr>
                                     );
@@ -1044,6 +1066,128 @@ export function OperationsSupervision() {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Cerrar Ticket (Supervisor) ── */}
+            {closeTarget && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+                        <div className="bg-emerald-50 border-b border-emerald-100 px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center">
+                                    <CheckCircle2 size={16} className="text-emerald-600" />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-black uppercase tracking-wide text-zinc-900">Cerrar Ticket</h2>
+                                    <p className="text-[10px] text-zinc-500 font-mono">
+                                        #{closeTarget.reference_id || closeTarget.id.split('-')[0]}
+                                        {' · '}
+                                        {closeTarget.metadata?.nombre_cliente || closeTarget.title}
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setCloseTarget(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="p-6 space-y-4">
+                            {/* Estado final */}
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">
+                                    Estado Final
+                                </label>
+                                <div className="flex bg-zinc-100 p-1 rounded-xl gap-1">
+                                    <button
+                                        onClick={() => setCloseStatusId(3)}
+                                        className={clsx(
+                                            'flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-wide transition-all',
+                                            closeStatusId === 3
+                                                ? 'bg-blue-600 text-white shadow-md'
+                                                : 'text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50'
+                                        )}
+                                    >
+                                        Resuelto
+                                    </button>
+                                    <button
+                                        onClick={() => setCloseStatusId(4)}
+                                        className={clsx(
+                                            'flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-wide transition-all',
+                                            closeStatusId === 4
+                                                ? 'bg-emerald-600 text-white shadow-md'
+                                                : 'text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50'
+                                        )}
+                                    >
+                                        Cerrado
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Resolución */}
+                            <div>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                        Resolución / Nota de Cierre *
+                                    </label>
+                                    <span className={clsx(
+                                        'text-[10px] font-bold font-mono',
+                                        closeNote.trim().length < 10 ? 'text-red-400' : 'text-emerald-500'
+                                    )}>
+                                        {closeNote.trim().length} / 10 mín.
+                                    </span>
+                                </div>
+                                <textarea
+                                    value={closeNote}
+                                    onChange={e => setCloseNote(e.target.value)}
+                                    rows={4}
+                                    autoFocus
+                                    placeholder="Descripción de la resolución aplicada al ticket..."
+                                    className="w-full border border-zinc-200 rounded-xl px-3 py-2.5 text-xs font-medium outline-none focus:border-zinc-400 resize-none placeholder:text-zinc-300"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="border-t border-zinc-100 px-6 py-4 flex items-center justify-between gap-3">
+                            <button
+                                onClick={() => setCloseTarget(null)}
+                                className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                disabled={closing || closeNote.trim().length < 10}
+                                onClick={async () => {
+                                    setClosing(true);
+                                    try {
+                                        const ok = await WorkflowService.supervisorCloseProcess(
+                                            closeTarget.id,
+                                            closeNote.trim(),
+                                            closeStatusId
+                                        );
+                                        if (ok) {
+                                            setProcesses(prev => prev.map(p =>
+                                                p.id === closeTarget.id
+                                                    ? { ...p, status: 'Completed', metadata: { ...p.metadata, id_estado: closeStatusId } }
+                                                    : p
+                                            ));
+                                            setCloseTarget(null);
+                                            setCloseNote('');
+                                        }
+                                    } finally {
+                                        setClosing(false);
+                                    }
+                                }}
+                                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                            >
+                                {closing
+                                    ? <Loader2 size={13} className="animate-spin" />
+                                    : <CheckCircle2 size={13} />
+                                }
+                                Confirmar Cierre
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Modal: Historial de Actividad ── */}
             {historyProcess && (

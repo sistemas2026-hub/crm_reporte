@@ -993,6 +993,69 @@ export const WorkflowService = {
             return false;
         }
     },
+    /**
+     * Cierre supervisado: el supervisor finaliza un proceso directamente desde la vista de Supervisión.
+     * No requiere workitem activo — opera sobre el process_id.
+     */
+    async supervisorCloseProcess(
+        processId: string,
+        resolution: string,
+        statusId: number = 4   // 4=Cerrado, 3=Resuelto
+    ): Promise<boolean> {
+        try {
+            const { data: { user } } = await safeGetUser();
+
+            // 1. Obtener el proceso
+            const { data: proc } = await supabase
+                .from('workflow_processes')
+                .select('reference_id, metadata')
+                .eq('id', processId)
+                .single();
+
+            if (!proc) return false;
+
+            // 2. Marcar proceso como Completado en Supabase
+            await supabase
+                .from('workflow_processes')
+                .update({
+                    status: 'Completed',
+                    metadata: { ...(proc.metadata || {}), supervisor_resolution: resolution, closed_at: new Date().toISOString() }
+                })
+                .eq('id', processId);
+
+            // 3. Cerrar todos los workitems activos (PE) del proceso
+            try {
+                const { data: activities } = await supabase
+                    .from('workflow_activities')
+                    .select('id')
+                    .eq('process_id', processId);
+                if (activities && activities.length > 0) {
+                    const activityIds = activities.map((a: any) => a.id);
+                    await supabase
+                        .from('workflow_workitems')
+                        .update({ status: 'CO' })
+                        .eq('status', 'PE')
+                        .in('workflow_activity_id', activityIds);
+                }
+            } catch { /* no bloquear si falla el cierre de workitems */ }
+
+            // 4. Sincronizar cierre con WispHub
+            if (proc.reference_id) {
+                try {
+                    await WisphubService.updateTicket(proc.reference_id, { id_estado: statusId });
+                } catch { /* no bloquear si WispHub no responde */ }
+            }
+
+            // 5. Log del evento
+            await this.logEvent(processId, 'SupervisorClose', `Supervisión cerró el ticket: ${resolution}`, user?.id);
+
+            return true;
+        } catch (e) {
+            console.error('[supervisorCloseProcess] Error:', e);
+            return false;
+        }
+    },
+
     async logEvent(processId: string, type: string, description: string, actorId?: string) {
         await supabase
             .from('workflow_logs')
