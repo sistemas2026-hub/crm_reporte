@@ -809,13 +809,18 @@ export const WorkflowService = {
                 })
                 .eq('id', workItemId);
 
-            // 3. Actualizar nivel en proceso
+            // 3. Actualizar nivel en proceso + marcar escalated_to para Supervisión
+            const escalatedToName = targetTechnicianId
+                ? (await supabase.from('profiles').select('full_name').or(`id.eq.${isUUID(targetTechnicianId) ? targetTechnicianId : '00000000-0000-0000-0000-000000000000'},wisphub_id.eq.${targetTechnicianId}`).maybeSingle())?.data?.full_name || targetTechnicianId
+                : `Nivel ${nextLevel}`;
             await supabase
                 .from('workflow_processes')
                 .update({
                     metadata: {
                         ...item.workflow_activities.workflow_processes.metadata,
-                        current_level: nextLevel
+                        current_level: nextLevel,
+                        escalated_to: escalatedToName,
+                        escalated_at: new Date().toISOString()
                     }
                 })
                 .eq('id', processId);
@@ -971,6 +976,17 @@ export const WorkflowService = {
                     }
                 }
             }
+            // 7. Log de escalamiento
+            try {
+                const { data: { user } } = await safeGetUser();
+                await this.logEvent(
+                    processId,
+                    'Escalation',
+                    `Ticket escalado a ${escalatedToName}`,
+                    user?.id
+                );
+            } catch { /* no bloquear si falla el log */ }
+
             return true;
         } catch (e) {
             console.error('Error in escalateWorkItem:', e);

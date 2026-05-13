@@ -3,7 +3,7 @@ import {
     Search, Calendar, RefreshCcw,
     ChevronLeft, ChevronRight, Users, Filter,
     CheckSquare, Square, AlertCircle, Loader2, X,
-    ArrowRight, Zap, Building2, ClipboardList
+    ArrowRight, Zap, ClipboardList, History, Clock
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
@@ -49,8 +49,13 @@ export function OperationsSupervision() {
     const [page, setPage] = useState(0);
     const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
 
-    // ── Pestañas
-    const [activeTab, setActiveTab] = useState<'campo' | 'oficina'>('campo');
+    // ── Pestañas de estado
+    const [activeTab, setActiveTab] = useState<'todos' | 'pendientes' | 'en_progreso' | 'finalizados'>('todos');
+
+    // ── Historial de actividad
+    const [historyProcess, setHistoryProcess] = useState<any | null>(null);
+    const [historyLogs, setHistoryLogs] = useState<any[]>([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
 
     // ── Filtros
     const [searchTerm, setSearchTerm] = useState('');
@@ -423,23 +428,15 @@ export function OperationsSupervision() {
             };
         });
 
-        // Filtro por pestaña — exactamente como se especificó
+        // Filtro por sub-pestaña de estado
         const byTab = enriched.filter(p => {
-            // Normalización defensiva doble: el campo ya viene en lowercase,
-            // pero cubrimos el caso donde la BD guardó el string literal "null"
-            const location = p.__strategicLocation
-                ? String(p.__strategicLocation).toLowerCase().trim()
-                : null;
-
-            if (activeTab === 'campo') {
-                return location === 'campo';
-            }
-
-            if (activeTab === 'oficina') {
-                return location === 'oficina' || !location || location === 'null';
-            }
-
-            return false;
+            if (activeTab === 'todos') return true;
+            const isStarted   = !!p.metadata?.started_at;
+            const isFinished  = p.status === 'Completed' || p.status === 'Cerrado';
+            if (activeTab === 'pendientes')   return !isFinished && !isStarted;
+            if (activeTab === 'en_progreso')  return !isFinished && isStarted;
+            if (activeTab === 'finalizados')  return isFinished;
+            return true;
         });
 
         // Filtro por técnico en barra de búsqueda (5 campos)
@@ -454,32 +451,18 @@ export function OperationsSupervision() {
         );
     }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterTech]);
 
-    // ── Conteos por pestaña (para badge) — sin afectar filtered
+    // ── Conteos por pestaña de estado
     const tabCounts = useMemo(() => {
-        if (!platformUsersReady || processes.length === 0) return { campo: 0, oficina: 0 };
-        return processes.reduce(
-            (acc, p) => {
-                // reutilizar la misma lógica de enriquecimiento (solo ubicación)
-                const nombreTecnico = p.metadata?.nombre_tecnico || '';
-                const normNombre = normalizeText(nombreTecnico);
-                let assignedUser: any = null;
-                if (normNombre) {
-                    assignedUser = userByKey.get(normNombre)
-                        ?? platformUsers.find(u => {
-                            const uNorm = normalizeText(u.full_name || u.display_name || '');
-                            return uNorm && (normNombre.includes(uNorm) || uNorm.includes(normNombre));
-                        });
-                }
-                const loc = assignedUser?.strategic_location
-                    ? String(assignedUser.strategic_location).toLowerCase().trim()
-                    : null;
-                if (loc === 'campo') acc.campo++;
-                else acc.oficina++;
-                return acc;
-            },
-            { campo: 0, oficina: 0 }
-        );
-    }, [processes, platformUsers, userByKey, platformUsersReady]);
+        const counts = { todos: processes.length, pendientes: 0, en_progreso: 0, finalizados: 0 };
+        for (const p of processes) {
+            const isStarted  = !!p.metadata?.started_at;
+            const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
+            if (isFinished)       counts.finalizados++;
+            else if (isStarted)   counts.en_progreso++;
+            else                  counts.pendientes++;
+        }
+        return counts;
+    }, [processes]);
 
     // ── Selección bulk
     const allSelected = filtered.length > 0 && filtered.every(p => selectedIds.has(p.id));
@@ -573,38 +556,30 @@ export function OperationsSupervision() {
         <div className="space-y-6">
             {/* ── Pestañas Campo / Oficina ── */}
             <div className="flex gap-1 border-b border-zinc-200">
-                <button
-                    onClick={() => { setActiveTab('campo'); setSelectedIds(new Set()); }}
-                    className={clsx(
-                        'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
-                        activeTab === 'campo'
-                            ? 'border-zinc-900 text-zinc-900'
-                            : 'border-transparent text-zinc-400 hover:text-zinc-600'
-                    )}
-                >
-                    <Zap size={12} /> Campo
-                    {tabCounts.campo > 0 && (
-                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
-                            {tabCounts.campo}
-                        </span>
-                    )}
-                </button>
-                <button
-                    onClick={() => { setActiveTab('oficina'); setSelectedIds(new Set()); }}
-                    className={clsx(
-                        'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
-                        activeTab === 'oficina'
-                            ? 'border-zinc-900 text-zinc-900'
-                            : 'border-transparent text-zinc-400 hover:text-zinc-600'
-                    )}
-                >
-                    <Building2 size={12} /> Oficina
-                    {tabCounts.oficina > 0 && (
-                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
-                            {tabCounts.oficina}
-                        </span>
-                    )}
-                </button>
+                {([
+                    { key: 'todos',       label: 'Todos',       icon: <Filter size={12} />,      color: 'zinc' },
+                    { key: 'pendientes',  label: 'Pendientes',  icon: <Zap size={12} />,          color: 'zinc' },
+                    { key: 'en_progreso', label: 'En Progreso', icon: <RefreshCcw size={12} />,   color: 'zinc' },
+                    { key: 'finalizados', label: 'Finalizados', icon: <CheckSquare size={12} />,  color: 'zinc' },
+                ] as const).map(tab => (
+                    <button
+                        key={tab.key}
+                        onClick={() => { setActiveTab(tab.key); setSelectedIds(new Set()); }}
+                        className={clsx(
+                            'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
+                            activeTab === tab.key
+                                ? 'border-zinc-900 text-zinc-900'
+                                : 'border-transparent text-zinc-400 hover:text-zinc-600'
+                        )}
+                    >
+                        {tab.icon} {tab.label}
+                        {tabCounts[tab.key] > 0 && (
+                            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
+                                {tabCounts[tab.key]}
+                            </span>
+                        )}
+                    </button>
+                ))}
             </div>
 
             <OperationsHeader
@@ -768,16 +743,15 @@ export function OperationsSupervision() {
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Nivel</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Responsable</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Estado</th>
+                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Escalado A</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">SLA</th>
-                                {activeTab === 'oficina' && (
-                                    <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Acción</th>
-                                )}
+                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Historial</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-zinc-100">
                             {!platformUsersReady ? (
                                 <tr>
-                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center">
+                                    <td colSpan={11} className="p-12 text-center">
                                         <div className="flex flex-col items-center gap-2">
                                             <Loader2 size={18} className="animate-spin text-zinc-400" />
                                             <span className="text-xs text-zinc-400 font-medium">Cargando mapa de técnicos...</span>
@@ -786,21 +760,14 @@ export function OperationsSupervision() {
                                 </tr>
                             ) : loading && processes.length === 0 ? (
                                 <tr>
-                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
+                                    <td colSpan={11} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
                                         Cargando datos operativos...
                                     </td>
                                 </tr>
                             ) : filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={activeTab === 'oficina' ? 10 : 9} className="p-12 text-center">
-                                        <div className="flex flex-col items-center gap-2">
-                                            <span className="text-xs text-zinc-400 font-medium">No se encontraron registros.</span>
-                                            {activeTab === 'campo' && processes.length > 0 && tabCounts.campo === 0 && (
-                                                <span className="text-[10px] text-amber-600 font-medium max-w-xs text-center">
-                                                    Ningún técnico tiene <code className="bg-amber-50 px-1 rounded border border-amber-200">strategic_location = campo</code> configurado. Ve a Configuración → perfil del técnico para asignarlo.
-                                                </span>
-                                            )}
-                                        </div>
+                                    <td colSpan={11} className="p-12 text-center">
+                                        <span className="text-xs text-zinc-400 font-medium">No se encontraron registros.</span>
                                     </td>
                                 </tr>
                             ) : (
@@ -902,18 +869,38 @@ export function OperationsSupervision() {
 
                                             {/* Estado */}
                                             <td className="p-4 text-center">
-                                                <span className={clsx(
-                                                    'px-2 py-1 rounded-full text-[9px] font-bold uppercase inline-flex items-center gap-1 border',
-                                                    p.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                                                        p.status === 'in_progress' ? 'bg-blue-50 text-blue-700 border-blue-100' :
-                                                            'bg-zinc-50 text-zinc-500 border-zinc-100'
-                                                )}>
-                                                    <div className={clsx('w-1.5 h-1.5 rounded-full',
-                                                        p.status === 'completed' ? 'bg-emerald-500' :
-                                                            p.status === 'in_progress' ? 'bg-blue-500' : 'bg-zinc-400'
-                                                    )} />
-                                                    {p.metadata?.nombre_estado || p.status || 'Abierto'}
-                                                </span>
+                                                {(() => {
+                                                    const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
+                                                    const isStarted  = !!p.metadata?.started_at;
+                                                    const isEscalated = (p.escalation_level || 0) >= 2;
+                                                    const label = isFinished ? (isEscalated ? 'Escalado' : 'Completado')
+                                                                : isStarted  ? 'En Progreso'
+                                                                : 'Abierto';
+                                                    return (
+                                                        <span className={clsx(
+                                                            'px-2 py-1 rounded-full text-[9px] font-bold uppercase inline-flex items-center gap-1 border',
+                                                            isFinished  ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
+                                                            isStarted   ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                                                                          'bg-zinc-50 text-zinc-500 border-zinc-100'
+                                                        )}>
+                                                            <div className={clsx('w-1.5 h-1.5 rounded-full',
+                                                                isFinished ? 'bg-emerald-500' : isStarted ? 'bg-blue-500' : 'bg-zinc-400'
+                                                            )} />
+                                                            {label}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </td>
+
+                                            {/* Escalado A */}
+                                            <td className="p-4 text-center">
+                                                {p.metadata?.escalated_to ? (
+                                                    <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-lg truncate max-w-[110px] block mx-auto">
+                                                        {p.metadata.escalated_to}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-zinc-300 text-[10px]">—</span>
+                                                )}
                                             </td>
 
                                             {/* SLA semáforo dinámico */}
@@ -947,22 +934,22 @@ export function OperationsSupervision() {
                                                 </div>
                                             </td>
 
-                                            {/* Acción: Derivar a Campo (solo pestaña Oficina) */}
-                                            {activeTab === 'oficina' && (
-                                                <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
-                                                    <button
-                                                        onClick={() => {
-                                                            setTransferTarget(p);
-                                                            setTransferNote('');
-                                                            setTransferTech('');
-                                                            setRemoteTestsDone([]);
-                                                        }}
-                                                        className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-orange-50 text-orange-700 border border-orange-200 rounded-lg hover:bg-orange-100 transition-all mx-auto"
-                                                    >
-                                                        <ArrowRight size={10} /> Campo
-                                                    </button>
-                                                </td>
-                                            )}
+                                            {/* Historial */}
+                                            <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
+                                                <button
+                                                    onClick={async () => {
+                                                        setHistoryProcess(p);
+                                                        setHistoryLogs([]);
+                                                        setHistoryLoading(true);
+                                                        const logs = await WorkflowService.getFullLogs(p.id);
+                                                        setHistoryLogs(logs);
+                                                        setHistoryLoading(false);
+                                                    }}
+                                                    className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-zinc-50 text-zinc-600 border border-zinc-200 rounded-lg hover:bg-zinc-100 transition-all mx-auto"
+                                                >
+                                                    <History size={10} /> Ver
+                                                </button>
+                                            </td>
                                         </tr>
                                     );
                                 })
@@ -1012,6 +999,61 @@ export function OperationsSupervision() {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Historial de Actividad ── */}
+            {historyProcess && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
+                        <div className="bg-zinc-50 border-b border-zinc-200 px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-zinc-100 flex items-center justify-center">
+                                    <History size={16} className="text-zinc-600" />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-black uppercase tracking-wide text-zinc-900">Historial de Actividad</h2>
+                                    <p className="text-[10px] text-zinc-500 font-mono">
+                                        #{historyProcess.reference_id || historyProcess.id.split('-')[0]}
+                                        {' · '}
+                                        {historyProcess.metadata?.nombre_cliente || historyProcess.title}
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setHistoryProcess(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                                <X size={18} />
+                            </button>
+                        </div>
+                        <div className="p-6 max-h-[60vh] overflow-y-auto">
+                            {historyLoading ? (
+                                <div className="flex items-center justify-center py-8 gap-2 text-zinc-400">
+                                    <Loader2 size={16} className="animate-spin" />
+                                    <span className="text-xs">Cargando historial...</span>
+                                </div>
+                            ) : historyLogs.length === 0 ? (
+                                <p className="text-xs text-zinc-400 text-center py-8">Sin registros de actividad aún.</p>
+                            ) : (
+                                <ol className="relative border-l border-zinc-200 space-y-4 ml-2">
+                                    {historyLogs.map(log => (
+                                        <li key={log.id} className="ml-4">
+                                            <div className="absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white bg-zinc-400" />
+                                            <div className="flex items-start gap-2">
+                                                <Clock size={11} className="text-zinc-400 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <p className="text-xs font-semibold text-zinc-800">{log.description}</p>
+                                                    <p className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                                                        {new Date(log.created_at).toLocaleString('es-CO', {
+                                                            dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Bogota'
+                                                        })}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ol>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Modal: Derivar a Campo ── */}
             {transferTarget && (

@@ -514,6 +514,16 @@ export function OperationsMyTasks() {
             if (ok) {
                 saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
                 dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} marcado como iniciado en WispHub.`);
+
+                // Guardar started_at en proceso para que Supervisión muestre "En Progreso"
+                const processId = proc?.id;
+                if (processId) {
+                    await supabase
+                        .from('workflow_processes')
+                        .update({ metadata: { ...(proc?.metadata || {}), started_at: new Date().toISOString() } })
+                        .eq('id', processId);
+                    WorkflowService.logEvent(processId, 'Start', 'El técnico inició el ticket', currentUserIdRef.current || undefined).catch(() => {});
+                }
             } else {
                 dispatchToast('No se pudo iniciar', 'error', `WispHub rechazó el inicio del ticket #${ticketId}. Verifica que el ticket exista y esté activo.`);
             }
