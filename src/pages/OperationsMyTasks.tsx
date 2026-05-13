@@ -514,12 +514,18 @@ export function OperationsMyTasks() {
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
 
-            // Guardar started_at para que Supervisión muestre "En Progreso"
+            // Guardar started_at + id_estado:2 en metadata para que Supervisión detecte "En Progreso"
             const processId = proc?.id;
             if (processId) {
                 await supabase
                     .from('workflow_processes')
-                    .update({ metadata: { ...(proc?.metadata || {}), started_at: new Date().toISOString() } })
+                    .update({
+                        metadata: {
+                            ...(proc?.metadata || {}),
+                            started_at: new Date().toISOString(),
+                            id_estado: 2
+                        }
+                    })
                     .eq('id', processId);
 
                 // workflow_logs solo cuando WispHub confirmó — trazabilidad verificada
@@ -527,16 +533,19 @@ export function OperationsMyTasks() {
                     WorkflowService.logEvent(
                         processId,
                         'Start',
-                        '📍 El técnico ha iniciado la gestión del ticket desde la App.',
+                        'Técnico inició el ticket — fecha_inicio enviada a WispHub.',
                         currentUserIdRef.current || undefined
                     ).catch(() => {});
                 }
             }
 
+            // Notificar a Supervisión para que recargue (puede que el ticket sea nuevo)
+            window.dispatchEvent(new CustomEvent('supervision:processes-updated', { detail: { ticketId } }));
+
             if (ok) {
-                dispatchToast('Ticket iniciado', 'success', `Ticket #${ticketId} — estado cambiado a En Proceso en WispHub.`);
+                dispatchToast('Ticket iniciado', 'success', `Ticket #${ticketId} — fecha de inicio registrada en WispHub.`);
             } else {
-                dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
+                dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado.`);
             }
         } catch (err: any) {
             console.error('[handleStartWork] Error:', err);
@@ -572,23 +581,31 @@ export function OperationsMyTasks() {
 
             const ok = await WisphubService.sendArrivalComment(ticketId);
 
-            // Siempre actualizar estado local — no bloquear en zonas de mala señal
+            // Siempre actualizar estado local
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
 
-            // workflow_logs solo cuando WispHub confirmó — trazabilidad verificada
+            // Confirmar id_estado:2 en metadata local (por si Iniciar no lo hizo)
+            const procArrival = wi.workflow_activities?.workflow_processes;
+            if (procArrival?.id) {
+                supabase
+                    .from('workflow_processes')
+                    .update({ metadata: { ...(procArrival.metadata || {}), id_estado: 2 } })
+                    .eq('id', procArrival.id)
+                    .then(() => {
+                        window.dispatchEvent(new CustomEvent('supervision:processes-updated', { detail: { ticketId } }));
+                    });
+            }
+
             if (ok) {
-                const processId = wi.workflow_activities?.workflow_processes?.id;
-                if (processId) {
-                    WorkflowService.logEvent(
-                        processId,
-                        'InProgress',
-                        '⚙️ Estado actualizado: El técnico se encuentra trabajando en la solución.',
-                        currentUserIdRef.current || undefined
-                    ).catch(() => {});
-                }
+                WorkflowService.logEvent(
+                    procArrival?.id,
+                    'Arrival',
+                    'Técnico llegó al sitio — fecha_inicio actualizada en WispHub.',
+                    currentUserIdRef.current || undefined
+                ).catch(() => {});
                 dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — llegada confirmada en WispHub.`);
             } else {
-                dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
+                dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado.`);
             }
         } catch (err: any) {
             console.error('[handleArrival] Error:', err);

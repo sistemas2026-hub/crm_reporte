@@ -1290,25 +1290,25 @@ export const WisphubService = {
     },
 
     async setTicketStartTime(ticketId: string | number): Promise<boolean> {
-        // Equivalente al botón "Iniciar" en WispHub:
-        // cambia id_estado a 2 (En Proceso) y registra fecha_inicio
+        // PATCH solo fecha_inicio — WispHub lo acepta y cambia el estado automáticamente.
+        // id_estado se actualiza aparte en metadata local para no requerir PUT completo.
         const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
         const pad = (n: number) => n.toString().padStart(2, '0');
         const formattedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 
-        return this.updateTicket(ticketId, { id_estado: 2, fecha_inicio: formattedDate });
+        return this.updateTicket(ticketId, { fecha_inicio: formattedDate });
     },
 
     async sendArrivalComment(ticketId: string | number): Promise<boolean> {
         const now = new Date();
 
-        // Equivalente al botón "Llegada" en WispHub:
-        // confirma que el técnico está en sitio actualizando fecha_llegada si existe,
-        // o bien reconfirma id_estado=2 para que el tablero lo refleje
-        const ok = await this.updateTicket(ticketId, {
-            id_estado: 2,
-            fecha_llegada: now.toISOString().slice(0, 19).replace('T', ' ')
-        });
+        // PATCH solo fecha_inicio nuevamente para que WispHub registre el horario de llegada
+        // sin necesitar PUT completo (que requiere tecnico_id y otros campos obligatorios).
+        const d = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const formattedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+
+        const ok = await this.updateTicket(ticketId, { fecha_inicio: formattedDate });
 
         // Audit log local en Supabase — siempre, independiente de WispHub
         try {
