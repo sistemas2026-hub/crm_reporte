@@ -724,7 +724,7 @@ export function OperationsSupervision() {
             </div>
 
             {/* ── Panel de reasignación masiva ── */}
-            {selectedIds.size > 0 && (
+            {selectedIds.size > 0 && activeTab !== 'finalizados' && (
                 <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
                     <span className="text-xs font-black text-indigo-700 uppercase">
                         {selectedIds.size} ticket{selectedIds.size !== 1 ? 's' : ''} seleccionado{selectedIds.size !== 1 ? 's' : ''}
@@ -780,11 +780,13 @@ export function OperationsSupervision() {
                     <table className="w-full">
                         <thead className="bg-zinc-50 border-b border-zinc-200">
                             <tr>
-                                <th className="p-3 w-10">
-                                    <button onClick={toggleAll} className="text-zinc-400 hover:text-indigo-600 transition-colors">
-                                        {allSelected ? <CheckSquare size={15} className="text-indigo-600" /> : <Square size={15} />}
-                                    </button>
-                                </th>
+                                {activeTab !== 'finalizados' && (
+                                    <th className="p-3 w-10">
+                                        <button onClick={toggleAll} className="text-zinc-400 hover:text-indigo-600 transition-colors">
+                                            {allSelected ? <CheckSquare size={15} className="text-indigo-600" /> : <Square size={15} />}
+                                        </button>
+                                    </th>
+                                )}
                                 <th className="p-4 text-left text-[10px] uppercase font-bold tracking-widest text-zinc-400">ID / Cliente</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Creación</th>
                                 <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Asunto</th>
@@ -800,7 +802,7 @@ export function OperationsSupervision() {
                         <tbody className="divide-y divide-zinc-100">
                             {!platformUsersReady ? (
                                 <tr>
-                                    <td colSpan={11} className="p-12 text-center">
+                                    <td colSpan={activeTab === 'finalizados' ? 10 : 11} className="p-12 text-center">
                                         <div className="flex flex-col items-center gap-2">
                                             <Loader2 size={18} className="animate-spin text-zinc-400" />
                                             <span className="text-xs text-zinc-400 font-medium">Cargando mapa de técnicos...</span>
@@ -809,13 +811,13 @@ export function OperationsSupervision() {
                                 </tr>
                             ) : loading && processes.length === 0 ? (
                                 <tr>
-                                    <td colSpan={11} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
+                                    <td colSpan={activeTab === 'finalizados' ? 10 : 11} className="p-12 text-center text-zinc-400 text-xs font-medium animate-pulse">
                                         Cargando datos operativos...
                                     </td>
                                 </tr>
                             ) : filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={11} className="p-12 text-center">
+                                    <td colSpan={activeTab === 'finalizados' ? 10 : 11} className="p-12 text-center">
                                         <span className="text-xs text-zinc-400 font-medium">No se encontraron registros.</span>
                                     </td>
                                 </tr>
@@ -845,13 +847,15 @@ export function OperationsSupervision() {
                                             )}
                                             onClick={() => toggleOne(p.id)}
                                         >
-                                            {/* Checkbox */}
-                                            <td className="p-3 text-center">
-                                                {isSelected
-                                                    ? <CheckSquare size={15} className="text-indigo-600 mx-auto" />
-                                                    : <Square size={15} className="text-zinc-300 mx-auto group-hover:text-zinc-500" />
-                                                }
-                                            </td>
+                                            {/* Checkbox (oculto en Finalizados) */}
+                                            {activeTab !== 'finalizados' && (
+                                                <td className="p-3 text-center">
+                                                    {isSelected
+                                                        ? <CheckSquare size={15} className="text-indigo-600 mx-auto" />
+                                                        : <Square size={15} className="text-zinc-300 mx-auto group-hover:text-zinc-500" />
+                                                    }
+                                                </td>
+                                            )}
 
                                             {/* ID / Cliente */}
                                             <td className="p-4">
