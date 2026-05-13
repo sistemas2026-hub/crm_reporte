@@ -52,6 +52,9 @@ export function OperationsSupervision() {
     // ── Pestañas de estado
     const [activeTab, setActiveTab] = useState<'todos' | 'pendientes' | 'en_progreso' | 'finalizados'>('todos');
 
+    // ── Filtro de ubicación (campo / oficina / todos)
+    const [filterLocation, setFilterLocation] = useState<'all' | 'campo' | 'oficina'>('all');
+
     // ── Historial de actividad
     const [historyProcess, setHistoryProcess] = useState<any | null>(null);
     const [historyLogs, setHistoryLogs] = useState<any[]>([]);
@@ -242,7 +245,7 @@ export function OperationsSupervision() {
 
     useEffect(() => {
         setPage(0);
-    }, [dateRange, filterEscalated, filterBarrio, searchTerm, pageSize, activeTab]);
+    }, [dateRange, filterEscalated, filterBarrio, searchTerm, pageSize, activeTab, filterLocation]);
 
     useEffect(() => {
         loadPage();
@@ -429,37 +432,51 @@ export function OperationsSupervision() {
         });
 
         // Filtro por sub-pestaña de estado
+        const isStartedFn = (p: any) =>
+            !!p.metadata?.started_at ||
+            p.metadata?.id_estado === 2 ||
+            p.metadata?.estado === 'En Progreso';
+
         const byTab = enriched.filter(p => {
             if (activeTab === 'todos') return true;
-            const isStarted   = !!p.metadata?.started_at;
-            const isFinished  = p.status === 'Completed' || p.status === 'Cerrado';
-            if (activeTab === 'pendientes')   return !isFinished && !isStarted;
-            if (activeTab === 'en_progreso')  return !isFinished && isStarted;
-            if (activeTab === 'finalizados')  return isFinished;
+            const isStarted  = isStartedFn(p);
+            const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
+            if (activeTab === 'pendientes')  return !isFinished && !isStarted;
+            if (activeTab === 'en_progreso') return !isFinished && isStarted;
+            if (activeTab === 'finalizados') return isFinished;
             return true;
         });
 
+        // Filtro por ubicación (campo / oficina)
+        const byLocation = filterLocation === 'all'
+            ? byTab
+            : byTab.filter(p =>
+                filterLocation === 'campo'
+                    ? p.__strategicLocation === 'campo'
+                    : p.__strategicLocation !== 'campo'  // oficina = todo lo que no es campo
+            );
+
         // Filtro por técnico en barra de búsqueda (5 campos)
-        if (!filterTech.trim()) return byTab;
+        if (!filterTech.trim()) return byLocation;
         const q = normalizeText(filterTech);
-        return byTab.filter(p =>
+        return byLocation.filter(p =>
             normalizeText(p.__techDisplayName).includes(q) ||
             normalizeText(p.metadata?.email_tecnico  || '').includes(q) ||
             normalizeText(p.metadata?.nombre_tecnico || '').includes(q) ||
             normalizeText(p.__assignedUser?.email    || '').includes(q) ||
             normalizeText(String(p.__assignedUser?.wisphub_id || '')).includes(q)
         );
-    }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterTech]);
+    }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterLocation, filterTech]);
 
     // ── Conteos por pestaña de estado
     const tabCounts = useMemo(() => {
         const counts = { todos: processes.length, pendientes: 0, en_progreso: 0, finalizados: 0 };
         for (const p of processes) {
-            const isStarted  = !!p.metadata?.started_at;
+            const isStarted  = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
             const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
-            if (isFinished)       counts.finalizados++;
-            else if (isStarted)   counts.en_progreso++;
-            else                  counts.pendientes++;
+            if (isFinished)     counts.finalizados++;
+            else if (isStarted) counts.en_progreso++;
+            else                counts.pendientes++;
         }
         return counts;
     }, [processes]);
@@ -554,13 +571,13 @@ export function OperationsSupervision() {
 
     return (
         <div className="space-y-6">
-            {/* ── Pestañas Campo / Oficina ── */}
-            <div className="flex gap-1 border-b border-zinc-200">
+            {/* ── Pestañas de estado + toggle campo/oficina ── */}
+            <div className="flex items-center gap-1 border-b border-zinc-200">
                 {([
-                    { key: 'todos',       label: 'Todos',       icon: <Filter size={12} />,      color: 'zinc' },
-                    { key: 'pendientes',  label: 'Pendientes',  icon: <Zap size={12} />,          color: 'zinc' },
-                    { key: 'en_progreso', label: 'En Progreso', icon: <RefreshCcw size={12} />,   color: 'zinc' },
-                    { key: 'finalizados', label: 'Finalizados', icon: <CheckSquare size={12} />,  color: 'zinc' },
+                    { key: 'todos',       label: 'Todos',       icon: <Filter size={12} /> },
+                    { key: 'pendientes',  label: 'Pendientes',  icon: <Zap size={12} /> },
+                    { key: 'en_progreso', label: 'En Progreso', icon: <RefreshCcw size={12} /> },
+                    { key: 'finalizados', label: 'Finalizados', icon: <CheckSquare size={12} /> },
                 ] as const).map(tab => (
                     <button
                         key={tab.key}
@@ -580,6 +597,28 @@ export function OperationsSupervision() {
                         )}
                     </button>
                 ))}
+
+                {/* Toggle Campo / Oficina */}
+                <div className="ml-auto flex items-center gap-1 mb-1 bg-zinc-100 rounded-xl p-1">
+                    {([
+                        { key: 'all',    label: 'Todos' },
+                        { key: 'campo',  label: 'Campo' },
+                        { key: 'oficina', label: 'Oficina' },
+                    ] as const).map(loc => (
+                        <button
+                            key={loc.key}
+                            onClick={() => { setFilterLocation(loc.key); setSelectedIds(new Set()); }}
+                            className={clsx(
+                                'px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all',
+                                filterLocation === loc.key
+                                    ? 'bg-white text-zinc-900 shadow-sm border border-zinc-200'
+                                    : 'text-zinc-400 hover:text-zinc-600'
+                            )}
+                        >
+                            {loc.label}
+                        </button>
+                    ))}
+                </div>
             </div>
 
             <OperationsHeader
@@ -870,8 +909,8 @@ export function OperationsSupervision() {
                                             {/* Estado */}
                                             <td className="p-4 text-center">
                                                 {(() => {
-                                                    const isFinished = p.status === 'Completed' || p.status === 'Cerrado';
-                                                    const isStarted  = !!p.metadata?.started_at;
+                                                    const isFinished  = p.status === 'Completed' || p.status === 'Cerrado';
+                                                    const isStarted   = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
                                                     const isEscalated = (p.escalation_level || 0) >= 2;
                                                     const label = isFinished ? (isEscalated ? 'Escalado' : 'Completado')
                                                                 : isStarted  ? 'En Progreso'
