@@ -1266,42 +1266,63 @@ export const WisphubService = {
 
 
 
+    /**
+     * POST /api/tickets/{id}/answer/ — publica una respuesta oficial en el hilo del ticket.
+     * Retorna true si WispHub aceptó la respuesta (2xx).
+     */
+    async postTicketAnswer(ticketId: string | number, respuesta: string): Promise<boolean> {
+        try {
+            const response = await safeFetch(`${BASE_URL}/tickets/${ticketId}/answer/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ respuesta })
+            });
+            if (response.ok) {
+                console.log(`[WispHub] ✅ Respuesta publicada en ticket #${ticketId}`);
+                return true;
+            }
+            console.warn(`[WispHub] postTicketAnswer → HTTP ${response.status} para ticket #${ticketId}`);
+            return false;
+        } catch (e) {
+            console.error('[WispHub] Error en postTicketAnswer:', e);
+            return false;
+        }
+    },
+
     async setTicketStartTime(ticketId: string | number): Promise<boolean> {
         // Formato esperado por WispHub: YYYY-MM-DD HH:MM:SS (Hora Colombia)
         const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
         const pad = (n: number) => n.toString().padStart(2, '0');
         const formattedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 
-        try {
-            // 1. Marcar fecha_inicio y cambiar estado a "En Proceso" (id_estado=2)
-            const ok = await this.updateTicket(ticketId, {
-                fecha_inicio: formattedDate,
-                id_estado: 2
-            });
+        // Primario: publicar respuesta oficial en el hilo del ticket
+        const answerOk = await this.postTicketAnswer(
+            ticketId,
+            '📍 El técnico ha iniciado la gestión del ticket desde la App.'
+        );
 
-            // 2. Comentario independiente — fire-and-forget, no bloquea
-            this.addTicketComment(
-                ticketId,
-                '📍 El técnico ha iniciado el ticket desde la App',
-                undefined,
-                true  // silent: no lanza excepciones al caller
-            ).catch(() => {});
+        // Secundario: marcar fecha_inicio + id_estado=2 — fire-and-forget
+        this.updateTicket(ticketId, { fecha_inicio: formattedDate, id_estado: 2 }).catch(() => {});
 
-            return ok;
-        } catch (error) {
-            console.error('[WispHub] Error en setTicketStartTime:', error);
-            return false;
-        }
+        return answerOk;
     },
 
     async sendArrivalComment(ticketId: string | number): Promise<boolean> {
         const now = new Date();
         const timestamp = now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        let supabaseOk = false;
 
         console.log(`[WispHub] Registrando llegada para ticket ${ticketId}...`);
 
-        // 1. Guardar en Supabase (Audit Log)
+        // Primario: publicar respuesta oficial en el hilo del ticket
+        const answerOk = await this.postTicketAnswer(
+            ticketId,
+            '⚙️ Estado actualizado: El técnico se encuentra trabajando en la solución.'
+        );
+
+        // Secundario: confirmar id_estado=2 — fire-and-forget
+        this.updateTicket(ticketId, { id_estado: 2 }).catch(() => {});
+
+        // Audit log local en Supabase — siempre, independiente de WispHub
         try {
             const { data: { user } } = await safeGetUser();
             await supabase.from('ticket_events').insert({
@@ -1311,23 +1332,11 @@ export const WisphubService = {
                 created_at: now.toISOString(),
                 metadata: { timestamp_display: timestamp }
             });
-            supabaseOk = true;
         } catch (e) {
             console.error('[WispHub] Error en Supabase (arrival):', e);
         }
 
-        // 2. Comentario independiente en WispHub — fire-and-forget
-        this.addTicketComment(
-            ticketId,
-            '⚙️ Tarea en progreso: El técnico está trabajando en la solicitud',
-            undefined,
-            true
-        ).catch(() => {});
-
-        // 3. Asegurar que id_estado quede en 2 (En Proceso) — fire-and-forget
-        this.updateTicket(ticketId, { id_estado: 2 }).catch(() => {});
-
-        return supabaseOk;
+        return answerOk;
     },
 
     /**

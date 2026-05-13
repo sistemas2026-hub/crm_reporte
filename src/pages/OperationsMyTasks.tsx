@@ -514,20 +514,29 @@ export function OperationsMyTasks() {
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
 
-            // Guardar started_at en proceso para que Supervisión muestre "En Progreso"
+            // Guardar started_at para que Supervisión muestre "En Progreso"
             const processId = proc?.id;
             if (processId) {
                 await supabase
                     .from('workflow_processes')
                     .update({ metadata: { ...(proc?.metadata || {}), started_at: new Date().toISOString() } })
                     .eq('id', processId);
-                WorkflowService.logEvent(processId, 'Start', 'El técnico inició el ticket', currentUserIdRef.current || undefined).catch(() => {});
+
+                // workflow_logs solo cuando WispHub confirmó — trazabilidad verificada
+                if (ok) {
+                    WorkflowService.logEvent(
+                        processId,
+                        'Start',
+                        '📍 El técnico ha iniciado la gestión del ticket desde la App.',
+                        currentUserIdRef.current || undefined
+                    ).catch(() => {});
+                }
             }
 
             if (ok) {
-                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} — inicio registrado y estado actualizado en WispHub.`);
+                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} — respuesta publicada y estado actualizado en WispHub.`);
             } else {
-                dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado se actualizará cuando recuperes señal.`);
+                dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
             }
         } catch (err: any) {
             console.error('[handleStartWork] Error:', err);
@@ -566,10 +575,20 @@ export function OperationsMyTasks() {
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], arrived: true } });
 
+            // workflow_logs solo cuando WispHub confirmó — trazabilidad verificada
             if (ok) {
-                dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — en progreso notificado en WispHub.`);
+                const processId = wi.workflow_activities?.workflow_processes?.id;
+                if (processId) {
+                    WorkflowService.logEvent(
+                        processId,
+                        'InProgress',
+                        '⚙️ Estado actualizado: El técnico se encuentra trabajando en la solución.',
+                        currentUserIdRef.current || undefined
+                    ).catch(() => {});
+                }
+                dispatchToast('En progreso notificado', 'success', `Ticket #${ticketId} — respuesta publicada en WispHub.`);
             } else {
-                dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. Se sincronizará cuando recuperes señal.`);
+                dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
             }
         } catch (err: any) {
             console.error('[handleArrival] Error:', err);
