@@ -534,7 +534,7 @@ export function OperationsMyTasks() {
             }
 
             if (ok) {
-                dispatchToast('Trabajo iniciado', 'success', `Ticket #${ticketId} — respuesta publicada y estado actualizado en WispHub.`);
+                dispatchToast('Ticket iniciado', 'success', `Ticket #${ticketId} — estado cambiado a En Proceso en WispHub.`);
             } else {
                 dispatchToast('Inicio guardado localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
             }
@@ -586,7 +586,7 @@ export function OperationsMyTasks() {
                         currentUserIdRef.current || undefined
                     ).catch(() => {});
                 }
-                dispatchToast('En progreso notificado', 'success', `Ticket #${ticketId} — respuesta publicada en WispHub.`);
+                dispatchToast('Llegada registrada', 'success', `Ticket #${ticketId} — llegada confirmada en WispHub.`);
             } else {
                 dispatchToast('Llegada guardada localmente', 'info', `Sin respuesta de WispHub. El estado local está guardado y se sincronizará cuando recuperes señal.`);
             }
