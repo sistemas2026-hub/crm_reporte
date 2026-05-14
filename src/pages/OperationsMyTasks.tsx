@@ -66,6 +66,8 @@ export function OperationsMyTasks() {
     const [actioningTicket, setActioningTicket] = useState<string | null>(null);
     // UUID de Supabase del técnico actual — se guarda una vez al cargar tareas
     const currentUserIdRef = useRef<string | null>(null);
+    // Procesos cuyo rechazo ya fue notificado — evita toast duplicado
+    const rejectedNotifiedRef = useRef<Set<string>>(new Set());
     const [companyName, setCompanyName] = useState<string>('ISP Reports');
     const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit Modal State
     const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
@@ -749,34 +751,30 @@ export function OperationsMyTasks() {
                             { event: 'UPDATE', schema: 'public', table: 'workflow_processes' },
                             async (payload) => {
                                 const newProc = payload.new as any;
-                                let wasRejected = false;
-                                setMyTasks(prev => {
-                                    let matched = false;
-                                    const next = prev.map(t => {
-                                        const proc = t.workflow_activities?.workflow_processes;
-                                        if (!proc || proc.id !== newProc.id) return t;
-                                        matched = true;
-                                        if (!proc.metadata?.validation_rejected && newProc.metadata?.validation_rejected) {
-                                            wasRejected = true;
-                                        }
-                                        return {
-                                            ...t,
-                                            workflow_activities: {
-                                                ...t.workflow_activities,
-                                                workflow_processes: {
-                                                    ...proc,
-                                                    ...newProc,
-                                                    metadata: { ...(proc.metadata || {}), ...(newProc.metadata || {}) }
-                                                }
+
+                                // Actualiza metadata en el estado local (si el proceso ya está en la lista)
+                                setMyTasks(prev => prev.map(t => {
+                                    const proc = t.workflow_activities?.workflow_processes;
+                                    if (!proc || proc.id !== newProc.id) return t;
+                                    return {
+                                        ...t,
+                                        workflow_activities: {
+                                            ...t.workflow_activities,
+                                            workflow_processes: {
+                                                ...proc,
+                                                ...newProc,
+                                                metadata: { ...(proc.metadata || {}), ...(newProc.metadata || {}) }
                                             }
-                                        };
-                                    });
-                                    return matched ? next : prev;
-                                });
-                                if (wasRejected) {
+                                        }
+                                    };
+                                }));
+
+                                // Rechazo: verificar directamente en payload, no en estado local
+                                // (el proceso puede no estar en myTasks si fue removido)
+                                if (newProc.metadata?.validation_rejected && !rejectedNotifiedRef.current.has(newProc.id)) {
+                                    rejectedNotifiedRef.current.add(newProc.id);
                                     const note = newProc.metadata?.validation_rejected_note || 'Revisar trabajo';
                                     dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
-                                    // Recarga para garantizar que el ticket aparece en la lista
                                     await loadMyTasks();
                                     setActiveSubTab('en_progreso');
                                 }
@@ -851,6 +849,16 @@ export function OperationsMyTasks() {
                 supabase.removeChannel(subscription);
             }
         };
+    }, []);
+
+    // Respaldo same-tab: Supervision despacha este evento tras rechazar
+    useEffect(() => {
+        const handler = async () => {
+            await loadMyTasks();
+            setActiveSubTab('en_progreso');
+        };
+        window.addEventListener('mytasks:reload', handler);
+        return () => window.removeEventListener('mytasks:reload', handler);
     }, []);
 
     return (

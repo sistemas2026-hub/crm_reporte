@@ -1283,6 +1283,8 @@ export function OperationsSupervision() {
                                                             ? { ...p, metadata: { ...p.metadata, pending_validation: false, validation_rejected: true, validation_rejected_note: rejectNote.trim() } }
                                                             : p
                                                     ));
+                                                    // Notifica a MyTasks (mismo-tab y cross-browser via Realtime)
+                                                    window.dispatchEvent(new CustomEvent('mytasks:reload'));
                                                     setValidateTarget(null);
                                                     setRejectNote('');
                                                     setShowRejectForm(false);
