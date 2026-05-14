@@ -59,6 +59,7 @@ export function OperationsMyTasks() {
         const saved = localStorage.getItem('tech_timeline_v1');
         return saved ? JSON.parse(saved) : {};
     });
+    const [activeSubTab, setActiveSubTab] = useState<'nueva' | 'en_progreso'>('nueva');
     const [pendingSyncCount, setPendingSyncCount] = useState(0);
     const [userProfile, setUserProfile] = useState<any | null>(null); // RBAC State
     // ticketId del ticket cuyo botón de acción está en progreso (Iniciar / Llegada)
@@ -548,6 +549,9 @@ export function OperationsMyTasks() {
             // Notificar a Supervisión para que recargue (puede que el ticket sea nuevo)
             window.dispatchEvent(new CustomEvent('supervision:processes-updated', { detail: { ticketId } }));
 
+            // Mover a sub-pestaña En Progreso
+            setActiveSubTab('en_progreso');
+
             if (ok) {
                 dispatchToast('Ticket iniciado', 'success', `Ticket #${ticketId} — fecha de inicio registrada en WispHub.`);
             } else {
@@ -743,18 +747,17 @@ export function OperationsMyTasks() {
                         .on(
                             'postgres_changes',
                             { event: 'UPDATE', schema: 'public', table: 'workflow_processes' },
-                            (payload) => {
+                            async (payload) => {
                                 const newProc = payload.new as any;
+                                let wasRejected = false;
                                 setMyTasks(prev => {
                                     let matched = false;
                                     const next = prev.map(t => {
                                         const proc = t.workflow_activities?.workflow_processes;
                                         if (!proc || proc.id !== newProc.id) return t;
                                         matched = true;
-                                        const wasRejected = !proc.metadata?.validation_rejected && newProc.metadata?.validation_rejected;
-                                        if (wasRejected) {
-                                            const note = newProc.metadata?.validation_rejected_note || 'Revisar trabajo';
-                                            dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
+                                        if (!proc.metadata?.validation_rejected && newProc.metadata?.validation_rejected) {
+                                            wasRejected = true;
                                         }
                                         return {
                                             ...t,
@@ -770,6 +773,13 @@ export function OperationsMyTasks() {
                                     });
                                     return matched ? next : prev;
                                 });
+                                if (wasRejected) {
+                                    const note = newProc.metadata?.validation_rejected_note || 'Revisar trabajo';
+                                    dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
+                                    // Recarga para garantizar que el ticket aparece en la lista
+                                    await loadMyTasks();
+                                    setActiveSubTab('en_progreso');
+                                }
                             }
                         )
                         .subscribe();
@@ -894,9 +904,41 @@ export function OperationsMyTasks() {
             />
 
             <div className="bg-white border border-zinc-200 rounded-3xl p-4 md:p-8 animate-in fade-in duration-500 shadow-sm">
-                <h2 className="text-lg font-bold mb-6 flex items-center gap-2 text-zinc-900 tracking-tight">
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-zinc-900 tracking-tight">
                     <CheckCircle2 className="text-zinc-900" size={20} /> Tareas Pendientes
                 </h2>
+
+                {/* Sub-pestañas Nueva / En Progreso */}
+                {!loading && myTasks.length > 0 && (() => {
+                    const countNueva    = myTasks.filter(wi => { const p = wi.workflow_activities?.workflow_processes; const tid = p?.reference_id || '---'; return !timelineStatus[tid]?.started && !p?.metadata?.started_at && p?.metadata?.id_estado !== 2 && !p?.metadata?.validation_rejected; }).length;
+                    const countProgreso = myTasks.filter(wi => { const p = wi.workflow_activities?.workflow_processes; const tid = p?.reference_id || '---'; return !!(timelineStatus[tid]?.started || p?.metadata?.started_at || p?.metadata?.id_estado === 2 || p?.metadata?.validation_rejected); }).length;
+                    return (
+                        <div className="flex items-center gap-1 border-b border-zinc-100 mb-6">
+                            {([
+                                { key: 'nueva',       label: 'Nueva',       count: countNueva },
+                                { key: 'en_progreso', label: 'En Progreso', count: countProgreso },
+                            ] as const).map(tab => (
+                                <button
+                                    key={tab.key}
+                                    onClick={() => setActiveSubTab(tab.key)}
+                                    className={clsx(
+                                        'flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-widest border-b-2 -mb-px transition-all',
+                                        activeSubTab === tab.key
+                                            ? 'border-zinc-900 text-zinc-900'
+                                            : 'border-transparent text-zinc-400 hover:text-zinc-600'
+                                    )}
+                                >
+                                    {tab.label}
+                                    {tab.count > 0 && (
+                                        <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-zinc-900 text-white leading-none">
+                                            {tab.count}
+                                        </span>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    );
+                })()}
 
                 {loading ? (
                     <div className="p-12 text-center text-zinc-400 animate-pulse font-bold uppercase tracking-widest text-xs">
@@ -910,7 +952,12 @@ export function OperationsMyTasks() {
                     </div>
                 ) : (
                     <div className="grid gap-4">
-                        {myTasks.map((wi) => {
+                        {myTasks.filter((wi) => {
+                            const proc = wi.workflow_activities?.workflow_processes;
+                            const ticketId = proc?.reference_id || '---';
+                            const inProgress = !!(timelineStatus[ticketId]?.started || proc?.metadata?.started_at || proc?.metadata?.id_estado === 2 || proc?.metadata?.validation_rejected);
+                            return activeSubTab === 'en_progreso' ? inProgress : !inProgress;
+                        }).map((wi) => {
                             const proc = wi.workflow_activities?.workflow_processes;
                             const ticketId = proc?.reference_id || '---';
 
