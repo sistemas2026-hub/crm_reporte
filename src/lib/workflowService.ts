@@ -70,20 +70,34 @@ export const WorkflowService = {
      */
     async syncMirrorBatch(tickets: any[]): Promise<void> {
         if (!tickets || tickets.length === 0) return;
-        
+
+        // Traer metadata existente en una sola consulta para preservar campos CRM
+        // (started_at, validation_rejected, pending_validation, etc.)
+        const refIds = tickets.map(t => String(t.id));
+        const { data: existing } = await supabase
+            .from('workflow_processes')
+            .select('reference_id, metadata')
+            .in('reference_id', refIds);
+        const existingMap = new Map((existing || []).map((r: any) => [r.reference_id, r.metadata || {}]));
+
         for (const t of tickets) {
-            // Upsert al espejo local
+            const ref = String(t.id);
+            const prevMeta = existingMap.get(ref) || {};
+            // WispHub data sobreescribe campos de WispHub;
+            // campos propios del CRM (started_at, validation_*, pending_*, id_estado local) se preservan.
+            const mergedMeta = { ...prevMeta, ...t };
+
             const { error } = await supabase
                 .from('workflow_processes')
                 .upsert({
-                    reference_id: String(t.id),
+                    reference_id: ref,
                     process_type: 'Ticket AXCES',
                     title: t.asunto || `Ticket #${t.id}`,
                     status: (t.id_estado === 3 || t.id_estado === 4) ? 'CO' : 'PE',
-                    metadata: t,
+                    metadata: mergedMeta,
                     priority: t.prioridad === 'Alta' ? 3 : t.prioridad === 'Media' ? 2 : 1
                 }, { onConflict: 'reference_id' });
-            
+
             if (error) console.error(`[Radar] Error sincronizando ticket ${t.id}:`, error);
         }
     },
@@ -646,6 +660,9 @@ export const WorkflowService = {
                     ...(proc?.metadata || {}),
                     pending_validation: true,
                     validation_requested_at: new Date().toISOString(),
+                    // Limpia rechazo previo para que el ciclo siguiente funcione limpio
+                    validation_rejected: false,
+                    validation_rejected_note: null,
                 }
             }).eq('id', processId);
 
@@ -1184,6 +1201,34 @@ export const WorkflowService = {
             }).eq('id', processId);
 
             await this.logEvent(processId, 'ValidationRejected', msg, user?.id).catch(() => {});
+
+            // Señal cross-tab: el storage event se dispara en OTRAS pestañas del mismo browser.
+            // MyTasks escucha esta clave y llama loadMyTasks() inmediatamente.
+            try {
+                localStorage.setItem('crm:rejection_signal', JSON.stringify({
+                    processId,
+                    note: note.trim(),
+                    at: new Date().toISOString(),
+                }));
+            } catch { /* no bloquear si localStorage no disponible */ }
+
+            // Reabre workitems para el técnico: si estaba SS (completado) lo vuelve PE.
+            // Esto garantiza que el ticket reaparezca en MyTasks después del rechazo.
+            try {
+                const { data: acts } = await supabase
+                    .from('workflow_activities')
+                    .select('id')
+                    .eq('process_id', processId);
+                if (acts && acts.length > 0) {
+                    const actIds = acts.map((a: any) => a.id);
+                    await supabase
+                        .from('workflow_workitems')
+                        .update({ status: 'PE', updated_at: new Date().toISOString() })
+                        .in('activity_id', actIds)
+                        .in('status', ['SS', 'PE']);
+                }
+            } catch { /* no bloquear */ }
+
             return true;
         } catch (e) {
             console.error('[rejectValidation] ERROR:', e);
@@ -1684,18 +1729,25 @@ export const WorkflowService = {
                 if ((!mergedMetadata.nombre_cliente || mergedMetadata.nombre_cliente === 'Cliente Desconocido') && old.nombre_cliente) {
                     mergedMetadata.nombre_cliente = old.nombre_cliente;
                 }
+                if (!mergedMetadata.creado_por && old.creado_por) mergedMetadata.creado_por = old.creado_por;
+                if (!mergedMetadata.asunto && old.asunto) mergedMetadata.asunto = old.asunto;
 
-                if (!mergedMetadata.creado_por && old.creado_por) {
-                    mergedMetadata.creado_por = old.creado_por;
-                }
-
-                if (!mergedMetadata.asunto && old.asunto) {
-                    mergedMetadata.asunto = old.asunto;
-                }
-
-                // Preservar trazabilidad o niveles de escalamiento internos si existen
+                // Preservar trazabilidad / escalamiento
                 if (old.current_level !== undefined) mergedMetadata.current_level = old.current_level;
                 if (old.last_escalation_at) mergedMetadata.last_escalation_at = old.last_escalation_at;
+
+                // Preservar campos CRM propios (no existen en WispHub):
+                // sin esto el sync borra el estado del flujo de validación y el progreso del técnico
+                // NOTA: id_estado NO está aquí — ese campo viene de WispHub y debe actualizarse con él.
+                const CRM_FIELDS = [
+                    'started_at',
+                    'pending_validation', 'validation_requested_at',
+                    'validation_rejected', 'validation_rejected_note',
+                    'validation_rejected_at', 'validation_rejected_by',
+                ] as const;
+                for (const field of CRM_FIELDS) {
+                    if (old[field] !== undefined) mergedMetadata[field] = old[field];
+                }
             }
 
             const { data: process, error: pErr } = await supabase
@@ -1775,7 +1827,9 @@ export const WorkflowService = {
                 // EXCEPCIÓN: Si forceLocalOverride es true (Deep Sync), confiamos en WispHub.
                 let statusToSave: string = finalStatus;
 
-                const shouldProtectLocalState = !options.forceLocalOverride && existingWorkItem?.status === 'SS' && finalStatus === 'PE';
+                // No proteger SS si el proceso tiene validation_rejected — el rechazo ya reabrió el workitem
+                const validationRejected = existingProcess?.metadata?.validation_rejected === true;
+                const shouldProtectLocalState = !options.forceLocalOverride && existingWorkItem?.status === 'SS' && finalStatus === 'PE' && !validationRejected;
 
                 if (shouldProtectLocalState) {
                     console.log(`[Sync] 🛡️ Protecting local 'SS' status for WorkItem ${existingWorkItem.id} against stale WispHub 'PE'.`);

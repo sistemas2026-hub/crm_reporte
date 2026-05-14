@@ -66,8 +66,8 @@ export function OperationsMyTasks() {
     const [actioningTicket, setActioningTicket] = useState<string | null>(null);
     // UUID de Supabase del técnico actual — se guarda una vez al cargar tareas
     const currentUserIdRef = useRef<string | null>(null);
-    // Procesos cuyo rechazo ya fue notificado — evita toast duplicado
-    const rejectedNotifiedRef = useRef<Set<string>>(new Set());
+    // IDs de workflow_processes pertenecientes a este técnico — para filtrar eventos Realtime
+    const myProcessIdsRef = useRef<Set<string>>(new Set());
     const [companyName, setCompanyName] = useState<string>('ISP Reports');
     const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit Modal State
     const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
@@ -393,8 +393,39 @@ export function OperationsMyTasks() {
             });
 
             setMyTasks(sortedData);
+            myProcessIdsRef.current = new Set(
+                sortedData.map(t => t.workflow_activities?.workflow_processes?.id).filter(Boolean)
+            );
             console.log(`[MyTasks] ✅ ${sortedData.length} tareas cargadas y ordenadas.`);
             console.log('=======================================\n');
+
+            // Si hay alguna tarea rechazada, siempre ir a la pestaña En Progreso
+            const hasRejected = sortedData.some(
+                wi => wi.workflow_activities?.workflow_processes?.metadata?.validation_rejected
+            );
+            if (hasRejected) setActiveSubTab('en_progreso');
+
+            // Toast de rechazo — solo una vez por rechazo (ack via localStorage)
+            try {
+                const ackRaw = localStorage.getItem('ack_rejections_v1');
+                const ackSet = new Set<string>(ackRaw ? JSON.parse(ackRaw) : []);
+                const newRejections = sortedData.filter(wi => {
+                    const proc = wi.workflow_activities?.workflow_processes;
+                    if (!proc?.metadata?.validation_rejected) return false;
+                    const key = `${proc.id}:${proc.metadata.validation_rejected_at || 'x'}`;
+                    return !ackSet.has(key);
+                });
+                if (newRejections.length > 0) {
+                    newRejections.forEach(wi => {
+                        const proc = wi.workflow_activities?.workflow_processes;
+                        const key = `${proc.id}:${proc.metadata.validation_rejected_at || 'x'}`;
+                        ackSet.add(key);
+                        const note = proc?.metadata?.validation_rejected_note || 'Revisar trabajo';
+                        dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
+                    });
+                    localStorage.setItem('ack_rejections_v1', JSON.stringify([...ackSet]));
+                }
+            } catch { /* no bloquear */ }
 
             // Guardamos el perfil completo para RBAC
             if (finalProfile) {
@@ -739,11 +770,14 @@ export function OperationsMyTasks() {
                                         dispatchToast("Ticket reasignado", "info", "Una tarea fue removida de tu bandeja.", "rm-ticket-ws");
                                     }
                                 } else if (payload.eventType === 'INSERT') {
-                                    // Nueva tarea: sí recarga para obtener los datos completos con joins
+                                    // Nueva tarea: recarga para obtener datos completos con joins
                                     dispatchToast("¡Nueva Tarea!", "info", "El centro de despacho te ha asignado un nuevo ticket.", "new-ticket-ws");
                                     await loadMyTasks();
+                                } else if (payload.eventType === 'UPDATE' && newRow?.status === 'PE') {
+                                    // Recarga silenciosa — rejectValidation toca updated_at para disparar este evento
+                                    // cuando workflow_processes no está en la publicación Realtime.
+                                    await loadMyTasks();
                                 }
-                                // UPDATE de otros campos (deadline, etc.): ignorar silenciosamente
                             }
                         )
                         .on(
@@ -769,12 +803,10 @@ export function OperationsMyTasks() {
                                     };
                                 }));
 
-                                // Rechazo: verificar directamente en payload, no en estado local
-                                // (el proceso puede no estar en myTasks si fue removido)
-                                if (newProc.metadata?.validation_rejected && !rejectedNotifiedRef.current.has(newProc.id)) {
-                                    rejectedNotifiedRef.current.add(newProc.id);
-                                    const note = newProc.metadata?.validation_rejected_note || 'Revisar trabajo';
-                                    dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
+                                // Rechazo: requestValidation limpia validation_rejected → false,
+                                // así este bloque solo corre cuando el supervisor rechaza.
+                                // loadMyTasks detecta vía localStorage si el rechazo es de este técnico.
+                                if (newProc.metadata?.validation_rejected === true) {
                                     await loadMyTasks();
                                     setActiveSubTab('en_progreso');
                                 }
@@ -861,6 +893,18 @@ export function OperationsMyTasks() {
         return () => window.removeEventListener('mytasks:reload', handler);
     }, []);
 
+    // Cross-tab: rejectValidation escribe en localStorage desde la pestaña de Supervisión.
+    // El storage event se dispara SOLO en otras pestañas del mismo browser (no en la actual).
+    useEffect(() => {
+        const handler = async (e: StorageEvent) => {
+            if (e.key !== 'crm:rejection_signal') return;
+            await loadMyTasks();
+            setActiveSubTab('en_progreso');
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, []);
+
     return (
         <div className="space-y-6">
             <OperationsHeader
@@ -918,8 +962,9 @@ export function OperationsMyTasks() {
 
                 {/* Sub-pestañas Nueva / En Progreso */}
                 {!loading && myTasks.length > 0 && (() => {
-                    const countNueva    = myTasks.filter(wi => { const p = wi.workflow_activities?.workflow_processes; const tid = p?.reference_id || '---'; return !timelineStatus[tid]?.started && !p?.metadata?.started_at && p?.metadata?.id_estado !== 2 && !p?.metadata?.validation_rejected; }).length;
-                    const countProgreso = myTasks.filter(wi => { const p = wi.workflow_activities?.workflow_processes; const tid = p?.reference_id || '---'; return !!(timelineStatus[tid]?.started || p?.metadata?.started_at || p?.metadata?.id_estado === 2 || p?.metadata?.validation_rejected); }).length;
+                    const isInProgress = (wi: any) => { const p = wi.workflow_activities?.workflow_processes; const tid = p?.reference_id || '---'; return !!(timelineStatus[tid]?.started || p?.metadata?.started_at || p?.metadata?.id_estado === 2 || p?.metadata?.estado === 'En Progreso' || p?.metadata?.validation_rejected); };
+                    const countNueva    = myTasks.filter(wi => !isInProgress(wi)).length;
+                    const countProgreso = myTasks.filter(wi =>  isInProgress(wi)).length;
                     return (
                         <div className="flex items-center gap-1 border-b border-zinc-100 mb-6">
                             {([
@@ -963,7 +1008,7 @@ export function OperationsMyTasks() {
                         {myTasks.filter((wi) => {
                             const proc = wi.workflow_activities?.workflow_processes;
                             const ticketId = proc?.reference_id || '---';
-                            const inProgress = !!(timelineStatus[ticketId]?.started || proc?.metadata?.started_at || proc?.metadata?.id_estado === 2 || proc?.metadata?.validation_rejected);
+                            const inProgress = !!(timelineStatus[ticketId]?.started || proc?.metadata?.started_at || proc?.metadata?.id_estado === 2 || proc?.metadata?.estado === 'En Progreso' || proc?.metadata?.validation_rejected);
                             return activeSubTab === 'en_progreso' ? inProgress : !inProgress;
                         }).map((wi) => {
                             const proc = wi.workflow_activities?.workflow_processes;
