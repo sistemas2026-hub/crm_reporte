@@ -740,6 +740,38 @@ export function OperationsMyTasks() {
                                 // UPDATE de otros campos (deadline, etc.): ignorar silenciosamente
                             }
                         )
+                        .on(
+                            'postgres_changes',
+                            { event: 'UPDATE', schema: 'public', table: 'workflow_processes' },
+                            (payload) => {
+                                const newProc = payload.new as any;
+                                setMyTasks(prev => {
+                                    let matched = false;
+                                    const next = prev.map(t => {
+                                        const proc = t.workflow_activities?.workflow_processes;
+                                        if (!proc || proc.id !== newProc.id) return t;
+                                        matched = true;
+                                        const wasRejected = !proc.metadata?.validation_rejected && newProc.metadata?.validation_rejected;
+                                        if (wasRejected) {
+                                            const note = newProc.metadata?.validation_rejected_note || 'Revisar trabajo';
+                                            dispatchToast('Validación rechazada', 'error', `Motivo: ${note}`);
+                                        }
+                                        return {
+                                            ...t,
+                                            workflow_activities: {
+                                                ...t.workflow_activities,
+                                                workflow_processes: {
+                                                    ...proc,
+                                                    ...newProc,
+                                                    metadata: { ...(proc.metadata || {}), ...(newProc.metadata || {}) }
+                                                }
+                                            }
+                                        };
+                                    });
+                                    return matched ? next : prev;
+                                });
+                            }
+                        )
                         .subscribe();
                 }
             } catch (e) {
