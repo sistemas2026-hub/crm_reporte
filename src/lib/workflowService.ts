@@ -1117,23 +1117,40 @@ export const WorkflowService = {
             const rawTicket = await WisphubService.getTicketRaw(ticketId).catch(() => null);
             const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
             const prioridad = rawTicket ? (priorityMap[rawTicket.prioridad] || 2) : 2;
-            const estadoActual = rawTicket?.id_estado || 2;
 
             const msg = `Validado por ${supervisorName}: ${note.trim()}`;
-            await WisphubService.postTicketResponse(ticketId, msg, { estado: estadoActual, prioridad }).catch(() => {});
+            // Cierra el ticket en WispHub (estado=4) junto con la respuesta de validación
+            await WisphubService.postTicketResponse(ticketId, msg, { estado: 4, prioridad }).catch(() => {});
 
             const { data: proc } = await supabase.from('workflow_processes').select('metadata').eq('id', processId).single();
             await supabase.from('workflow_processes').update({
+                status: 'Completed',
                 metadata: {
                     ...(proc?.metadata || {}),
                     pending_validation: false,
                     supervisor_validated: true,
                     supervisor_validation_note: note.trim(),
                     supervisor_validated_at: new Date().toISOString(),
+                    closed_at: new Date().toISOString(),
                 }
             }).eq('id', processId);
 
-            await this.logEvent(processId, 'SupervisorValidation', msg).catch(() => {});
+            // Cierra workitems activos del proceso
+            try {
+                const { data: activities } = await supabase
+                    .from('workflow_activities')
+                    .select('id')
+                    .eq('process_id', processId);
+                if (activities && activities.length > 0) {
+                    await supabase
+                        .from('workflow_workitems')
+                        .update({ status: 'CO' })
+                        .eq('status', 'PE')
+                        .in('workflow_activity_id', activities.map((a: any) => a.id));
+                }
+            } catch { /* no bloquear */ }
+
+            await this.logEvent(processId, 'SupervisorValidation', msg, user?.id).catch(() => {});
             return true;
         } catch (e) {
             console.error('[supervisorValidateProcess] ERROR:', e);

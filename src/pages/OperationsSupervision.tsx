@@ -1157,7 +1157,7 @@ export function OperationsSupervision() {
                                         if (ok) {
                                             setProcesses(prev => prev.map(p =>
                                                 p.id === validateTarget.id
-                                                    ? { ...p, metadata: { ...p.metadata, pending_validation: false, supervisor_validated: true } }
+                                                    ? { ...p, status: 'Completed', metadata: { ...p.metadata, pending_validation: false, supervisor_validated: true, closed_at: new Date().toISOString() } }
                                                     : p
                                             ));
                                             setValidateTarget(null);
