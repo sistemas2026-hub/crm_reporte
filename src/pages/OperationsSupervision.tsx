@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
+import { WisphubService } from '../lib/wisphub';
 import { OperationsHeader } from '../components/operations/OperationsHeader';
 import { orgService } from '../lib/orgService';
 import clsx from 'clsx';
@@ -70,6 +71,11 @@ export function OperationsSupervision() {
     const [validateTarget, setValidateTarget] = useState<any | null>(null);
     const [validateNote, setValidateNote] = useState('');
     const [validating, setValidating] = useState(false);
+    const [validateHistory, setValidateHistory] = useState<any[]>([]);
+    const [validateHistoryLoading, setValidateHistoryLoading] = useState(false);
+    const [showRejectForm, setShowRejectForm] = useState(false);
+    const [rejectNote, setRejectNote] = useState('');
+    const [rejecting, setRejecting] = useState(false);
 
     // ── Filtros
     const [searchTerm, setSearchTerm] = useState('');
@@ -1096,8 +1102,10 @@ export function OperationsSupervision() {
             {/* ── Modal: Validar Ticket (Supervisor) ── */}
             {validateTarget && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
-                        <div className="bg-zinc-50 border-b border-zinc-200 px-6 py-4 flex items-center justify-between">
+                    <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+
+                        {/* Header */}
+                        <div className="bg-zinc-50 border-b border-zinc-200 px-6 py-4 flex items-center justify-between shrink-0">
                             <div className="flex items-center gap-3">
                                 <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center">
                                     <Activity size={16} className="text-violet-600" />
@@ -1110,68 +1118,187 @@ export function OperationsSupervision() {
                                     </p>
                                 </div>
                             </div>
-                            <button onClick={() => setValidateTarget(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                            <button onClick={() => { setValidateTarget(null); setShowRejectForm(false); setRejectNote(''); setValidateNote(''); setValidateHistory([]); }} className="text-zinc-400 hover:text-zinc-700 transition-colors">
                                 <X size={18} />
                             </button>
                         </div>
 
-                        <div className="px-6 py-5 space-y-4">
-                            {validateTarget.metadata?.supervisor_validation_note === undefined && validateTarget.metadata?.pending_validation && (
-                                <div className="bg-violet-50 border border-violet-200 rounded-2xl px-4 py-3 text-[11px] text-violet-700 font-bold">
-                                    El técnico solicitó validación para este ticket.
+                        {/* Historial de respuestas WispHub */}
+                        <div className="px-6 pt-4 shrink-0">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Historial del ticket</span>
+                                {!validateHistoryLoading && validateHistory.length === 0 && (
+                                    <button
+                                        onClick={async () => {
+                                            const ticketId = validateTarget.reference_id;
+                                            if (!ticketId) return;
+                                            setValidateHistoryLoading(true);
+                                            try {
+                                                const raw = await WisphubService.getTicketRaw(String(ticketId)).catch(() => null);
+                                                setValidateHistory(raw?.respuestas || []);
+                                            } finally {
+                                                setValidateHistoryLoading(false);
+                                            }
+                                        }}
+                                        className="text-[10px] font-bold text-violet-600 hover:text-violet-800 underline"
+                                    >
+                                        Cargar historial
+                                    </button>
+                                )}
+                            </div>
+                            {validateHistoryLoading && (
+                                <div className="flex items-center gap-2 py-3 text-[11px] text-zinc-400">
+                                    <Loader2 size={12} className="animate-spin" /> Cargando respuestas...
                                 </div>
                             )}
-                            <div>
-                                <label className="text-[11px] font-black text-zinc-700 uppercase tracking-widest block mb-2">
-                                    Respuesta del supervisor
-                                </label>
-                                <textarea
-                                    value={validateNote}
-                                    onChange={e => setValidateNote(e.target.value)}
-                                    placeholder="Describe la validación realizada..."
-                                    rows={4}
-                                    className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-xs font-medium outline-none focus:bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-100 transition-all resize-none placeholder:text-zinc-300"
-                                    autoFocus
-                                />
-                                <span className={clsx('text-[10px] font-bold font-mono', validateNote.trim().length < 5 ? 'text-red-400' : 'text-emerald-500')}>
-                                    {validateNote.trim().length} / 5 mín.
-                                </span>
-                            </div>
+                            {!validateHistoryLoading && validateHistory.length > 0 && (
+                                <div className="overflow-y-auto max-h-52 space-y-2 pr-1 mb-1">
+                                    {validateHistory.map((r: any, i: number) => (
+                                        <div key={i} className="bg-zinc-50 border border-zinc-100 rounded-xl px-3 py-2 text-[11px]">
+                                            <div className="flex items-center justify-between gap-2 mb-1">
+                                                <span className="font-bold text-zinc-700 truncate">{r.usuario || r.user || 'Sistema'}</span>
+                                                <span className="text-zinc-400 font-mono shrink-0 text-[10px]">
+                                                    {r.created ? new Date(r.created).toLocaleString('es-CO', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : ''}
+                                                </span>
+                                            </div>
+                                            <p className="text-zinc-600 whitespace-pre-wrap break-words">{r.respuesta || r.comentario || ''}</p>
+                                            {r.archivo && (
+                                                <a href={r.archivo} target="_blank" rel="noreferrer" className="mt-1.5 block">
+                                                    <img src={r.archivo} alt="foto" className="rounded-lg max-h-40 object-cover border border-zinc-200 cursor-pointer hover:opacity-90" />
+                                                </a>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
 
-                        <div className="border-t border-zinc-100 px-6 py-4 flex items-center justify-between gap-3">
-                            <button onClick={() => setValidateTarget(null)} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors">
-                                Cancelar
-                            </button>
-                            <button
-                                disabled={validating || validateNote.trim().length < 5}
-                                onClick={async () => {
-                                    setValidating(true);
-                                    try {
-                                        const ticketId = validateTarget.reference_id;
-                                        const ok = await WorkflowService.supervisorValidateProcess(
-                                            validateTarget.id,
-                                            String(ticketId),
-                                            validateNote.trim()
-                                        );
-                                        if (ok) {
-                                            setProcesses(prev => prev.map(p =>
-                                                p.id === validateTarget.id
-                                                    ? { ...p, status: 'Completed', metadata: { ...p.metadata, pending_validation: false, supervisor_validated: true, closed_at: new Date().toISOString() } }
-                                                    : p
-                                            ));
-                                            setValidateTarget(null);
-                                            setValidateNote('');
-                                        }
-                                    } finally {
-                                        setValidating(false);
-                                    }
-                                }}
-                                className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
-                            >
-                                {validating ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
-                                Confirmar Validación
-                            </button>
+                        {/* Cuerpo scrollable */}
+                        <div className="px-6 py-4 overflow-y-auto flex-1">
+                            {!showRejectForm ? (
+                                <div className="space-y-3">
+                                    <label className="text-[11px] font-black text-zinc-700 uppercase tracking-widest block">
+                                        Respuesta de validación
+                                    </label>
+                                    <textarea
+                                        value={validateNote}
+                                        onChange={e => setValidateNote(e.target.value)}
+                                        placeholder="Describe la validación realizada..."
+                                        rows={3}
+                                        className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-xs font-medium outline-none focus:bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-100 transition-all resize-none placeholder:text-zinc-300"
+                                        autoFocus
+                                    />
+                                    <span className={clsx('text-[10px] font-bold font-mono', validateNote.trim().length < 5 ? 'text-red-400' : 'text-emerald-500')}>
+                                        {validateNote.trim().length} / 5 mín.
+                                    </span>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 text-[11px] text-red-700 font-bold">
+                                        El técnico será notificado del rechazo y deberá volver a enviar a validación.
+                                    </div>
+                                    <label className="text-[11px] font-black text-zinc-700 uppercase tracking-widest block">
+                                        Motivo del rechazo
+                                    </label>
+                                    <textarea
+                                        value={rejectNote}
+                                        onChange={e => setRejectNote(e.target.value)}
+                                        placeholder="Explica por qué se rechaza la validación..."
+                                        rows={3}
+                                        className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-xs font-medium outline-none focus:bg-white focus:border-red-400 focus:ring-4 focus:ring-red-100 transition-all resize-none placeholder:text-zinc-300"
+                                        autoFocus
+                                    />
+                                    <span className={clsx('text-[10px] font-bold font-mono', rejectNote.trim().length < 5 ? 'text-red-400' : 'text-emerald-500')}>
+                                        {rejectNote.trim().length} / 5 mín.
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="border-t border-zinc-100 px-6 py-4 flex items-center justify-between gap-3 shrink-0">
+                            {!showRejectForm ? (
+                                <>
+                                    <button
+                                        onClick={() => setShowRejectForm(true)}
+                                        className="flex items-center gap-1.5 px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-xl font-bold text-xs uppercase hover:bg-red-100 transition-all"
+                                    >
+                                        <X size={12} /> No Validar
+                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={() => { setValidateTarget(null); setValidateNote(''); setValidateHistory([]); }} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors">
+                                            Cancelar
+                                        </button>
+                                        <button
+                                            disabled={validating || validateNote.trim().length < 5}
+                                            onClick={async () => {
+                                                setValidating(true);
+                                                try {
+                                                    const ticketId = validateTarget.reference_id;
+                                                    const ok = await WorkflowService.supervisorValidateProcess(
+                                                        validateTarget.id,
+                                                        String(ticketId),
+                                                        validateNote.trim()
+                                                    );
+                                                    if (ok) {
+                                                        setProcesses(prev => prev.map(p =>
+                                                            p.id === validateTarget.id
+                                                                ? { ...p, status: 'Completed', metadata: { ...p.metadata, pending_validation: false, supervisor_validated: true, closed_at: new Date().toISOString() } }
+                                                                : p
+                                                        ));
+                                                        setValidateTarget(null);
+                                                        setValidateNote('');
+                                                        setValidateHistory([]);
+                                                    }
+                                                } finally {
+                                                    setValidating(false);
+                                                }
+                                            }}
+                                            className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                                        >
+                                            {validating ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
+                                            Confirmar Validación
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <button onClick={() => setShowRejectForm(false)} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-700 transition-colors">
+                                        Volver
+                                    </button>
+                                    <button
+                                        disabled={rejecting || rejectNote.trim().length < 5}
+                                        onClick={async () => {
+                                            setRejecting(true);
+                                            try {
+                                                const ticketId = validateTarget.reference_id;
+                                                const ok = await WorkflowService.rejectValidation(
+                                                    validateTarget.id,
+                                                    String(ticketId),
+                                                    rejectNote.trim()
+                                                );
+                                                if (ok) {
+                                                    setProcesses(prev => prev.map(p =>
+                                                        p.id === validateTarget.id
+                                                            ? { ...p, metadata: { ...p.metadata, pending_validation: false, validation_rejected: true, validation_rejected_note: rejectNote.trim() } }
+                                                            : p
+                                                    ));
+                                                    setValidateTarget(null);
+                                                    setRejectNote('');
+                                                    setShowRejectForm(false);
+                                                    setValidateHistory([]);
+                                                }
+                                            } finally {
+                                                setRejecting(false);
+                                            }
+                                        }}
+                                        className="flex items-center gap-2 px-5 py-2.5 bg-red-600 text-white rounded-xl font-bold text-xs uppercase tracking-wide hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                                    >
+                                        {rejecting ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                                        Rechazar Validación
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>

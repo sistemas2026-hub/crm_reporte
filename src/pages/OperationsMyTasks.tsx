@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity, Navigation, Zap } from 'lucide-react';
+import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, AlertCircle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity, Navigation, Zap } from 'lucide-react';
 import { supabase, safeGetUser } from '../lib/supabase';
 import { WorkflowService, REQUIREMENTS } from '../lib/workflowService';
 import { WisphubService } from '../lib/wisphub';
@@ -1076,15 +1076,22 @@ export function OperationsMyTasks() {
                                             </button>
                                         )}
 
-                                        {/* Pasar a Validar — visible cuando ya llegó y no está en validación */}
+                                        {/* Pasar a Validar — visible cuando ya llegó y no está en validación activa */}
                                         {timelineStatus[ticketId]?.arrived && !proc?.metadata?.pending_validation && (
-                                            <button
-                                                onClick={() => { setSelectedTask(wi); setActionType('validate'); }}
-                                                className="px-3 py-2 bg-violet-50 text-violet-600 border border-violet-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0 hover:bg-violet-100"
-                                                title="Enviar al supervisor para validación"
-                                            >
-                                                <Activity size={12} /> Validar
-                                            </button>
+                                            <div className="flex flex-col gap-1 shrink-0">
+                                                {proc?.metadata?.validation_rejected && (
+                                                    <div className="px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-[10px] font-bold uppercase flex items-center gap-1.5">
+                                                        <AlertCircle size={11} /> Rechazado: {proc.metadata.validation_rejected_note || 'revisar trabajo'}
+                                                    </div>
+                                                )}
+                                                <button
+                                                    onClick={() => { setSelectedTask(wi); setActionType('validate'); }}
+                                                    className="px-3 py-2 bg-violet-50 text-violet-600 border border-violet-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 hover:bg-violet-100"
+                                                    title="Enviar al supervisor para validación"
+                                                >
+                                                    <Activity size={12} /> {proc?.metadata?.validation_rejected ? 'Volver a Validar' : 'Validar'}
+                                                </button>
+                                            </div>
                                         )}
                                         {proc?.metadata?.pending_validation && (
                                             <span className="px-3 py-2 bg-violet-50 text-violet-400 border border-violet-100 rounded-xl text-[10px] font-bold uppercase flex items-center gap-1.5 shrink-0">

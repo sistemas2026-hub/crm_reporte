@@ -1114,13 +1114,9 @@ export const WorkflowService = {
                 supervisorName = profile?.full_name || user.email || 'Supervisor';
             }
 
-            const rawTicket = await WisphubService.getTicketRaw(ticketId).catch(() => null);
-            const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
-            const prioridad = rawTicket ? (priorityMap[rawTicket.prioridad] || 2) : 2;
-
             const msg = `Validado por ${supervisorName}: ${note.trim()}`;
-            // Cierra el ticket en WispHub (estado=4) junto con la respuesta de validación
-            await WisphubService.postTicketResponse(ticketId, msg, { estado: 4, prioridad }).catch(() => {});
+            // PUT completo estado=4 para cerrar el ticket en WispHub (postTicketResponse solo agrega texto, no cambia estado)
+            await this.updateTicketStatus(String(ticketId), 4, msg);
 
             const { data: proc } = await supabase.from('workflow_processes').select('metadata').eq('id', processId).single();
             await supabase.from('workflow_processes').update({
@@ -1154,6 +1150,43 @@ export const WorkflowService = {
             return true;
         } catch (e) {
             console.error('[supervisorValidateProcess] ERROR:', e);
+            return false;
+        }
+    },
+
+    async rejectValidation(processId: string, ticketId: string, note: string): Promise<boolean> {
+        try {
+            const { data: { user } } = await safeGetUser();
+            let supervisorName = 'Supervisor';
+            if (user) {
+                const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single();
+                supervisorName = profile?.full_name || user.email || 'Supervisor';
+            }
+
+            const rawTicket = await WisphubService.getTicketRaw(ticketId).catch(() => null);
+            const priorityMap: Record<string, number> = { "Baja": 1, "Normal": 2, "Media": 2, "Alta": 3, "Muy Alta": 4 };
+            const prioridad = rawTicket ? (priorityMap[rawTicket.prioridad] || 2) : 2;
+
+            const msg = `Validación rechazada por ${supervisorName}: ${note.trim()}`;
+            // Mantiene el ticket en progreso (estado=2)
+            await WisphubService.postTicketResponse(ticketId, msg, { estado: 2, prioridad }).catch(() => {});
+
+            const { data: proc } = await supabase.from('workflow_processes').select('metadata').eq('id', processId).single();
+            await supabase.from('workflow_processes').update({
+                metadata: {
+                    ...(proc?.metadata || {}),
+                    pending_validation: false,
+                    validation_rejected: true,
+                    validation_rejected_note: note.trim(),
+                    validation_rejected_at: new Date().toISOString(),
+                    validation_rejected_by: supervisorName,
+                }
+            }).eq('id', processId);
+
+            await this.logEvent(processId, 'ValidationRejected', msg, user?.id).catch(() => {});
+            return true;
+        } catch (e) {
+            console.error('[rejectValidation] ERROR:', e);
             return false;
         }
     },
