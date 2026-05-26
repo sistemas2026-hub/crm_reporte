@@ -4,6 +4,7 @@ import {
     Search, Plus, X, Paperclip, TicketCheck
 } from 'lucide-react';
 import { WisphubService, type WispHubClient, type WispHubStaff } from '../lib/wisphub';
+import { WisphubCache } from '../lib/wisphubCache';
 
 const PAGE_SIZE = 50;
 const DEBOUNCE_MS = 400;
@@ -16,6 +17,69 @@ const PRIORIDADES = [
 ];
 
 interface ColFilters { nombre: string; cedula: string; estado: string; plan: string; }
+
+// ─── Combobox (input + dropdown filtrable) ────────────────────────────────────
+
+interface ComboOption { value: string; label: string; }
+
+function Combobox({ value, onChange, options, displayValue, placeholder }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: ComboOption[];
+    displayValue: (v: string) => string;
+    placeholder?: string;
+}) {
+    const [query, setQuery] = useState('');
+    const [open, setOpen] = useState(false);
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+                setOpen(false);
+                setQuery('');
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, []);
+
+    const filtered = query.trim()
+        ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+        : options;
+
+    return (
+        <div ref={containerRef} className="relative">
+            <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                <input
+                    type="text"
+                    value={open ? query : displayValue(value)}
+                    onChange={e => { setQuery(e.target.value); setOpen(true); }}
+                    onFocus={() => setOpen(true)}
+                    placeholder={placeholder}
+                    className="w-full pl-9 pr-3 py-2.5 text-sm border border-zinc-200 rounded-xl outline-none focus:border-zinc-400 bg-white font-medium text-zinc-800 placeholder:text-zinc-300"
+                />
+            </div>
+            {open && filtered.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-zinc-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
+                    {filtered.map(o => (
+                        <button
+                            key={o.value}
+                            type="button"
+                            onMouseDown={() => { onChange(o.value); setOpen(false); setQuery(''); }}
+                            className={`w-full text-left px-3 py-2 text-sm font-medium transition-colors first:rounded-t-xl last:rounded-b-xl ${
+                                o.value === value ? 'bg-zinc-900 text-white' : 'text-zinc-700 hover:bg-zinc-50'
+                            }`}
+                        >
+                            {o.label}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
 
 // ─── Modal crear ticket ────────────────────────────────────────────────────────
 
@@ -69,6 +133,7 @@ function TicketModal({ client, onClose }: TicketModalProps) {
             });
             if (result?.success) {
                 setSuccess(true);
+                WisphubCache.refresh();
                 setTimeout(onClose, 1800);
             } else {
                 setError(result?.message || 'Error al crear el ticket. Intenta de nuevo.');
@@ -118,29 +183,30 @@ function TicketModal({ client, onClose }: TicketModalProps) {
                         <form id="ticket-form" onSubmit={handleSubmit} className="p-6 space-y-5">
                             {/* Asunto */}
                             <Field label="Asunto" required>
-                                <select
+                                <Combobox
                                     value={asunto}
-                                    onChange={e => setAsunto(e.target.value)}
-                                    className="w-full px-3 py-2.5 text-sm border border-zinc-200 rounded-xl outline-none focus:border-zinc-400 bg-white font-medium text-zinc-800"
-                                >
-                                    {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
+                                    onChange={setAsunto}
+                                    options={subjects.map(s => ({ value: s, label: s }))}
+                                    displayValue={v => v}
+                                    placeholder="Buscar asunto..."
+                                />
                             </Field>
 
                             {/* Técnico */}
                             <Field label="Técnico">
-                                <select
+                                <Combobox
                                     value={tecnico}
-                                    onChange={e => setTecnico(e.target.value)}
-                                    className="w-full px-3 py-2.5 text-sm border border-zinc-200 rounded-xl outline-none focus:border-zinc-400 bg-white font-medium text-zinc-800"
-                                >
-                                    <option value="">— Sin asignar —</option>
-                                    {staff.map(s => (
-                                        <option key={s.usuario} value={s.usuario}>
-                                            {s.nombre} ({s.usuario})
-                                        </option>
-                                    ))}
-                                </select>
+                                    onChange={setTecnico}
+                                    options={[
+                                        { value: '', label: '— Sin asignar —' },
+                                        ...staff.map(s => ({ value: s.usuario, label: `${s.nombre} (${s.usuario})` })),
+                                    ]}
+                                    displayValue={v => v
+                                        ? (staff.find(s => s.usuario === v)?.nombre ?? v)
+                                        : '— Sin asignar —'
+                                    }
+                                    placeholder="Buscar técnico..."
+                                />
                             </Field>
 
                             {/* Prioridad + Estado en fila */}
