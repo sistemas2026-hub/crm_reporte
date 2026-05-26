@@ -18,7 +18,8 @@ import {
     Search as SearchIcon,
     Clock,
     Activity,
-    Radio
+    Radio,
+    Users
 } from 'lucide-react';
 
 export interface MenuItem {
@@ -36,6 +37,13 @@ export interface NavGroup {
 }
 
 export const NAV_GROUPS: NavGroup[] = [
+    {
+        title: 'Clientes',
+        icon: Users,
+        items: [
+            { id: 'clients', to: '/clientes', icon: Users, label: 'Clientes' },
+        ]
+    },
     {
         title: 'Escalamiento',
         icon: Activity,

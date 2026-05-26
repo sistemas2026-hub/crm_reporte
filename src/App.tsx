@@ -34,6 +34,7 @@ import InventoryAnalytics from './pages/InventoryAnalytics';
 import InventorySlips from './pages/InventorySlips';
 import InventoryMovements from './pages/InventoryMovements';
 import { VoiceCampaigns } from './pages/VoiceCampaigns';
+import { Clients } from './pages/Clients';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -144,6 +145,7 @@ function App() {
           <Route path="/operaciones/hub" element={<OperationsHub />} />
           <Route path="/operaciones/despacho" element={<DispatchHub />} />
           <Route path="/operaciones/productividad" element={<OperationsProductivity />} />
+          <Route path="/clientes" element={<Clients />} />
           <Route path="/operaciones/mis-tareas" element={<OperationsMyTasks />} />
           <Route path="/operaciones/supervision" element={<OperationsSupervision />} />
           <Route path="/operaciones/tecnicos" element={<TechnicianAnalytics />} />
