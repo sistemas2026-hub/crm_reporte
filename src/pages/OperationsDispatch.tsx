@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import useSWR from 'swr';
 import {
     Search,
     Truck,
@@ -22,9 +21,9 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import type { DropResult } from '@hello-pangea/dnd';
-import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
 import { WisphubService } from '../lib/wisphub';
+import { useWisphubTickets } from '../hooks/useWisphubTickets';
 import { OperationalTimeline } from './OperationalTimeline';
 import { SmartOltWidget } from '../components/operations/SmartOltWidget';
 import clsx from 'clsx';
@@ -175,82 +174,33 @@ export function OperationsDispatch() {
         WisphubService.getStaff();
     }, []);
 
-    // SWR HOOKS
-    // SWR HOOKS - OFFLINE FIRST STRATEGY (V2)
-    // 1. Técnicos
-    const { data: techList, isValidating: isSyncingTechs } = useSWR('platform-users',
-        () => WorkflowService.getPlatformUsers(),
-        {
-            refreshInterval: 300000, // Cada 5 min es suficiente para técnicos
-            revalidateOnFocus: false,
-            fallbackData: JSON.parse(localStorage.getItem('swr_platform_users') || 'null'),
-            onSuccess: (data) => localStorage.setItem('swr_platform_users', JSON.stringify(data))
-        }
-    );
-    // --- NUEVA ESTRATEGIA: ESPEJO LOCAL (REALTIME) ---
-    const { data: mirrorData, mutate: mutateMirror, isValidating: isSyncingMirror, error: ticketsError } = useSWR('operational-tickets-mirror-v3',
-        () => WorkflowService.getOperationalTicketsMirror(),
-        {
-            refreshInterval: 0, // No polling! Usamos WebSockets
-            revalidateOnFocus: false, // DESACTIVADO: evita peticiones competidoras que se abortan entre sí
-            dedupingInterval: 10000, // 10s de deduplicación para evitar doble-fetch al montar
-            fallbackData: JSON.parse(localStorage.getItem('swr_operational_mirror_v3') || '[]'),
-            onSuccess: (data) => {
-                try {
-                    // Guardar solo los primeros 100 como caché offline (localStorage tiene límite de 5MB)
-                    localStorage.setItem('swr_operational_mirror_v3', JSON.stringify(data.slice(0, 100)));
-                } catch { /* localStorage lleno o bloqueado, continuar sin caché */ }
-            }
-        }
+    // Técnicos de plataforma (Supabase, se refresca cada 5 min)
+    const [techList, setTechList] = useState<any[] | null>(null);
+    const [isSyncingTechs, setIsSyncingTechs] = useState(false);
+    useEffect(() => {
+        setIsSyncingTechs(true);
+        WorkflowService.getPlatformUsers()
+            .then(setTechList)
+            .finally(() => setIsSyncingTechs(false));
+        const id = setInterval(() => {
+            WorkflowService.getPlatformUsers().then(setTechList);
+        }, 300000);
+        return () => clearInterval(id);
+    }, []);
+
+    // Todos los tickets de WispHub (caché compartida, TTL 5 min)
+    const { tickets: allWisphubTickets, loading: isSyncingMirror, refresh: mutateMirror } = useWisphubTickets(
+        { status: ['1', '2', '3', '4'] },
+        { autoRefresh: true, refreshIntervalMs: 5 * 60 * 1000 }
     );
 
-    // Mapeo retrocompatible para no romper el resto del componente
-    const rawTickets = useMemo(() => mirrorData?.filter(t => [1, 5, '1', '5'].includes(t.id_estado)) || [], [mirrorData]);
-    const inProgressTickets = useMemo(() => mirrorData?.filter(t => [2, '2'].includes(t.id_estado)) || [], [mirrorData]);
-    const completedTicketsRaw = useMemo(() => mirrorData?.filter(t => [3, 4, '3', '4'].includes(t.id_estado)) || [], [mirrorData]);
+    const rawTickets = useMemo(() => allWisphubTickets.filter(t => [1, 5, '1', '5'].includes(t.id_estado)), [allWisphubTickets]);
+    const inProgressTickets = useMemo(() => allWisphubTickets.filter(t => [2, '2'].includes(t.id_estado)), [allWisphubTickets]);
+    const completedTicketsRaw = useMemo(() => allWisphubTickets.filter(t => [3, 4, '3', '4'].includes(t.id_estado)), [allWisphubTickets]);
 
-    const mutateTickets = mutateMirror; // Alias para compatibilidad
+    const mutateTickets = mutateMirror;
     const isGlobalSyncing = isSyncingMirror || isSyncingTechs;
 
-    // Suscripción Realtime para actualizaciones instantáneas
-    useEffect(() => {
-        const channel = supabase
-            .channel('dispatch_mirror_sync')
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'workflow_processes',
-                    filter: `process_type=eq.Ticket AXCES`
-                },
-                () => {
-                    console.log('[Dispatch-Realtime] 🔄 Cambio detectado en espejo local. Mutando...');
-                    mutateMirror();
-                }
-            )
-            .subscribe((status: string) => {
-                console.log('[Dispatch-Realtime] Estado suscripción:', status);
-            });
-
-        // Lanzar validación silenciosa (El Detective)
-        // Se ejecuta una vez sin bloquear el renderizado ni la carga inicial.
-        setTimeout(() => {
-            WorkflowService.silentDetectiveSync().catch(console.error);
-        }, 3000); // 3 segundos de retraso para no competir con el fetch inicial
-
-        // --- RADAR DE SEGUNDO PLANO (NUEVO) ---
-        // Escanea tickets nuevos creados HOY cada 2 minutos
-        const radarInterval = setInterval(() => {
-            console.log('[Radar-Hoy] 📡 Iniciando escaneo automático de tickets de hoy...');
-            WorkflowService.radarSyncToday().catch(console.error);
-        }, 120000); // 2 minutos (120,000 ms)
-
-        return () => {
-            supabase.removeChannel(channel);
-            clearInterval(radarInterval);
-        };
-    }, [mutateMirror]);
 
     const technicians = useMemo(() => {
         if (!techList) return [];
@@ -683,22 +633,19 @@ export function OperationsDispatch() {
     const handleFullResync = async () => {
         if (isFullResyncing) return;
         setIsFullResyncing(true);
-        window.dispatchEvent(new CustomEvent('app:toast', { 
-            detail: { id: 'deep-sync', message: 'Sincronización profunda: trayendo nuevos y purgando fantasmas...', type: 'loading', duration: 0 } 
+        window.dispatchEvent(new CustomEvent('app:toast', {
+            detail: { id: 'deep-sync', message: 'Actualizando tickets desde WispHub...', type: 'loading', duration: 0 }
         }));
 
         try {
-            const success = await WorkflowService.fullMirrorResync();
-            if (success) {
-                await mutateMirror();
-                window.dispatchEvent(new CustomEvent('app:toast', { 
-                    detail: { id: 'deep-sync', message: 'Sincronización terminada. Espejo local actualizado.', type: 'success', duration: 3000 } 
-                }));
-            } else {
-                window.dispatchEvent(new CustomEvent('app:toast', { 
-                    detail: { id: 'deep-sync', message: 'Error en la sincronización profunda.', type: 'error', duration: 3000 } 
-                }));
-            }
+            await mutateMirror();
+            window.dispatchEvent(new CustomEvent('app:toast', {
+                detail: { id: 'deep-sync', message: 'Tickets actualizados desde WispHub.', type: 'success', duration: 3000 }
+            }));
+        } catch {
+            window.dispatchEvent(new CustomEvent('app:toast', {
+                detail: { id: 'deep-sync', message: 'Error al actualizar tickets.', type: 'error', duration: 3000 }
+            }));
         } finally {
             setIsFullResyncing(false);
         }
@@ -827,24 +774,11 @@ export function OperationsDispatch() {
     };
     useEffect(() => { if (selectedTicket && !selectedTicket.creado_por) loadTicketDetail(selectedTicket.id); }, [selectedTicket?.id]);
 
-    // SOLO BLOQUEAR SI NO TENEMOS TÉCNICOS (Estructura mínima necesaria)
-    // El resto de los datos se cargan en segundo plano
-    if (!techList && !ticketsError) {
+    if (!techList) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
                 <Loader2 className="w-12 h-12 animate-spin text-primary" />
                 <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Iniciando Despacho...</p>
-            </div>
-        );
-    }
-
-    // Solo mostrar error fatal si tampoco hay datos en caché
-    if (ticketsError && (!mirrorData || mirrorData.length === 0)) {
-        return (
-            <div className="flex flex-col items-center justify-center min-h-[400px] gap-4 p-8 border-2 border-dashed border-destructive/20 rounded-[2rem] bg-destructive/5 text-center">
-                <AlertCircle className="w-12 h-12 text-destructive" />
-                <p className="text-xs text-destructive/70 font-medium">Error al conectar con el servidor de tickets.</p>
-                <button onClick={() => mutateTickets()} className="bg-destructive text-white px-6 py-2 rounded-xl font-black uppercase text-xs">Reintentar Conexión</button>
             </div>
         );
     }

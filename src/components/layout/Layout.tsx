@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { NAV_GROUPS } from '../../config/menu';
 import { WisphubService, type WispHubClient } from '../../lib/wisphub';
+import { WisphubCache } from '../../lib/wisphubCache';
 import { NotificationService, type Notification } from '../../lib/notifications';
 import { WorkflowService } from '../../lib/workflowService';
 import clsx from 'clsx';
@@ -265,34 +266,13 @@ export function Layout() {
 
     useEffect(() => {
         checkCriticalTickets();
-
-        // --- REALTIME ALERTS ---
-        const channel = supabase
-            .channel('global_sla_alerts')
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'workflow_processes',
-                    filter: 'process_type=eq.Ticket AXCES'
-                },
-                () => {
-                    console.log('[Layout-Realtime] 🔄 Cambio en tickets. Re-evaluando SLAs...');
-                    checkCriticalTickets();
-                }
-            )
-            .subscribe();
-
-        return () => {
-            supabase.removeChannel(channel);
-        };
+        const interval = setInterval(checkCriticalTickets, 5 * 60 * 1000);
+        return () => clearInterval(interval);
     }, []);
 
     const checkCriticalTickets = async () => {
         try {
-            // Usamos el espejo local en lugar de la API externa
-            const tickets = await WorkflowService.getOperationalTicketsMirror();
+            const tickets = await WisphubCache.getAll();
 
             const critical = tickets.filter((t: any) =>
                 t.sla_status === 'critico' &&

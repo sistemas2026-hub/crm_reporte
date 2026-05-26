@@ -15,6 +15,7 @@ import {
     Repeat2
 } from 'lucide-react';
 import { WorkflowService } from '../lib/workflowService';
+import { WisphubCache } from '../lib/wisphubCache';
 import { supabase } from '../lib/supabase';
 import * as XLSX from 'xlsx';
 import {
@@ -116,9 +117,7 @@ export function TechnicianAnalytics() {
     const handleBackgroundSync = async () => {
         setIsSyncing(true);
         try {
-            await WorkflowService.syncGlobalTickets(30, (current, total) => {
-                setLoadProgress({ current, total });
-            });
+            await WisphubCache.refresh();
             await loadData();
         } finally {
             setIsSyncing(false);
@@ -133,17 +132,12 @@ export function TechnicianAnalytics() {
             const startOfMonth = new Date(year, month - 1, 1).toISOString();
             const endOfMonth = new Date(year, month, 0, 23, 59, 59).toISOString();
 
-            // ── 1. Fetch all data in parallel ──────────────────────────────
-            const [
-                { data: processes, error: processesError },
-                { data: profiles },
-                { data: rawMovements }
-            ] = await Promise.all([
-                supabase
-                    .from('workflow_processes')
-                    .select('metadata')
-                    .gte('created_at', startOfMonth)
-                    .lte('created_at', endOfMonth),
+            // ── 1. Fetch all data ──────────────────────────────────────────
+            const startDate = new Date(year, month - 1, 1);
+            const endDate = new Date(year, month, 0, 23, 59, 59);
+
+            const [allWisphubTickets, { data: profiles }, { data: rawMovements }] = await Promise.all([
+                WisphubCache.getAll(),
                 supabase
                     .from('profiles')
                     .select('id, full_name, wisphub_id, is_field_tech'),
@@ -167,9 +161,11 @@ export function TechnicianAnalytics() {
                     .lte('created_at', endOfMonth)
             ]);
 
-            if (processesError) throw processesError;
-
-            const tickets = (processes || []).map(p => p.metadata).filter(Boolean);
+            const tickets = allWisphubTickets.filter(t => {
+                if (!t.fecha_creacion) return false;
+                const d = new Date(t.fecha_creacion);
+                return d >= startDate && d <= endDate;
+            });
 
             // ── 2. Profiles Maps ───────────────────────────────────────────
             const profileByName = (profiles || []).reduce((acc: any, p: any) => {
