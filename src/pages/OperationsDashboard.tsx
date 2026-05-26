@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
 import { WisphubService, whNormalize } from '../lib/wisphub';
-import { supabase } from '../lib/supabase';
 import { useWisphubTickets } from '../hooks/useWisphubTickets';
 import {
     AlertTriangle,
@@ -63,7 +62,7 @@ export function OperationsDashboard() {
     const [showFilters, setShowFilters] = useState(false);
 
     // Consulta directa a WispHub — todos los estados (1=Nuevo, 2=En Progreso, 3=Resuelto, 4=Cerrado)
-    const { tickets: allTickets, loading: isValidating, refresh: mutate, lastUpdated } = useWisphubTickets(
+    const { tickets: allTickets, loading: isValidating, refresh: mutate } = useWisphubTickets(
         { status: ['1', '2', '3', '4'] },
         { autoRefresh: true, refreshIntervalMs: 5 * 60 * 1000 }
     );
@@ -275,7 +274,7 @@ export function OperationsDashboard() {
 
     // Ya no bloqueamos la interfaz con el spinner si tenemos datos (aunque sean viejos)
     // Solo mostramos el spinner si es la PRIMERA vez absoluta que entra el usuario (sin caché)
-    const initialLoading = !activeData && isValidating;
+    const initialLoading = allTickets.length === 0 && isValidating;
 
     if (initialLoading) return (
         <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
@@ -297,7 +296,7 @@ export function OperationsDashboard() {
                     </h1>
                     <div className="flex items-center gap-3 mt-1 ml-9">
                         <p className="text-slate-500 text-sm font-medium">Gestión Operativa y Seguimiento de Productividad Mensual</p>
-                        {isValidating && swrData && (
+                        {isValidating && allTickets.length > 0 && (
                             <span className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100 animate-pulse">
                                 <Activity size={10} className="animate-spin" /> SINCRONIZANDO
                             </span>
@@ -324,12 +323,12 @@ export function OperationsDashboard() {
                         disabled={isValidating}
                         className="flex items-center gap-2 px-4 py-2 bg-blue-900 text-white rounded-xl hover:bg-blue-950 transition-all font-bold text-xs shadow-md shadow-blue-900/10 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        {isValidating && swrData ? (
+                        {isValidating && allTickets.length > 0 ? (
                             <Activity size={14} className="animate-spin" />
                         ) : (
                             <Clock size={14} />
                         )}
-                        {isValidating && swrData ? 'Sincronizando...' : 'Actualizar'}
+                        {isValidating && allTickets.length > 0 ? 'Sincronizando...' : 'Actualizar'}
                     </button>
                 </div>
             </header>
