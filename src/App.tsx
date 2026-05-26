@@ -55,7 +55,12 @@ function App() {
         }
         setSession(session);
         if (session) {
-          const org = await orgService.getOrg().catch(() => null);
+          let org = await orgService.getOrg().catch(() => null);
+          // Reintento único si la primera carga falla (AbortError / timeout transitorio)
+          if (!org) {
+            await new Promise(r => setTimeout(r, 800));
+            org = await orgService.getOrg().catch(() => null);
+          }
           setOrgReady(!!org);
         }
       })

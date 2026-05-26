@@ -72,8 +72,12 @@ export function OperationsMyTasks() {
     const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit Modal State
     const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
     const [manualTicketId, setManualTicketId] = useState('');
+    const [customerHistory, setCustomerHistory] = useState<{ tickets: any[]; clientName: string; ticketId: string } | null>(null);
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [historyFilter, setHistoryFilter] = useState('');
     const [signalAutoFetching, setSignalAutoFetching] = useState(false);
     const [signalAutoFailed, setSignalAutoFailed] = useState(false);
+    const [smartoltTrigger, setSmartoltTrigger] = useState(0);
     const smartoltRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // --- SISTEMA DE BORRADORES (IndexedDB) ---
@@ -88,12 +92,13 @@ export function OperationsMyTasks() {
         }
     }, [evidenceFiles, selectedTask]);
 
-    // 2. Recuperar borrador al seleccionar tarea
+    // 2. Recuperar borrador al seleccionar tarea — siempre limpia fotos del ticket anterior
     useEffect(() => {
+        setEvidenceFiles([]);
         if (selectedTask?.workflow_activities?.workflow_processes?.reference_id) {
             const ticketId = selectedTask.workflow_activities.workflow_processes.reference_id;
             draftService.getDraft(String(ticketId)).then(files => {
-                if (files && files.length > 0 && evidenceFiles.length === 0) {
+                if (files && files.length > 0) {
                     console.log(`[Drafts] 📦 Borrador recuperado para Ticket #${ticketId}: ${files.length} fotos`);
                     setEvidenceFiles(files);
                     dispatchToast("Borrador recuperado", "info", `Se cargaron ${files.length} fotos pendientes.`);
@@ -106,7 +111,7 @@ export function OperationsMyTasks() {
 
     // 3. Auto-query SmartOLT al abrir modal de finalización (3 reintentos con backoff)
     useEffect(() => {
-        if (actionType !== 'complete' || !selectedTask) return;
+        if ((actionType !== 'complete' && actionType !== 'validate') || !selectedTask) return;
 
         // Limpiar retries anteriores
         if (smartoltRetryRef.current) clearTimeout(smartoltRetryRef.current);
@@ -115,24 +120,25 @@ export function OperationsMyTasks() {
         setSignal('');
 
         const meta = selectedTask.workflow_activities?.workflow_processes?.metadata || {};
-        const sn: string = meta.sn_onu || meta.onu_serial || meta.serial_onu || meta.serial || meta.sn || meta.numero_serie || '';
+        const svc  = typeof meta.servicio === 'object' ? meta.servicio : (meta.servicio_completo || {});
 
-        if (!sn) {
-            setSignalAutoFailed(true);
-            return;
-        }
+        const extractSn = (obj: any): string =>
+            (obj?.sn_onu || obj?.onu_serial || obj?.serial_onu || obj?.serial ||
+             obj?.sn || obj?.numero_serie || obj?.onu_sn || obj?.serial_number || '').toString().trim();
+
+        let sn = extractSn(meta) || extractSn(svc);
 
         let attempt = 0;
         const MAX_ATTEMPTS = 3;
 
-        const query = async () => {
+        const query = async (resolvedSn: string) => {
             setSignalAutoFetching(true);
             try {
-                const result = await SmartOLTService.getOnuSignal(sn);
+                const result = await SmartOLTService.getOnuSignal(resolvedSn);
                 if (result?.rx !== null && result?.rx !== undefined) {
                     setSignal(String(result.rx));
                     setSignalAutoFailed(false);
-                    console.log(`[SmartOLT] Señal obtenida automáticamente: ${result.rx} dBm`);
+                    console.log(`[SmartOLT] Señal obtenida: ${result.rx} dBm | SN: ${resolvedSn}`);
                 } else {
                     throw new Error('No signal data');
                 }
@@ -140,10 +146,9 @@ export function OperationsMyTasks() {
                 attempt++;
                 if (attempt < MAX_ATTEMPTS) {
                     const delay = 2000 * attempt;
-                    console.warn(`[SmartOLT] Intento ${attempt}/${MAX_ATTEMPTS} fallido, reintentando en ${delay}ms...`);
-                    smartoltRetryRef.current = setTimeout(query, delay);
+                    smartoltRetryRef.current = setTimeout(() => query(resolvedSn), delay);
                 } else {
-                    console.warn('[SmartOLT] Todos los intentos fallaron. Habilitando entrada manual con excepción.');
+                    console.warn('[SmartOLT] Todos los intentos fallaron.');
                     setSignalAutoFailed(true);
                 }
             } finally {
@@ -151,12 +156,33 @@ export function OperationsMyTasks() {
             }
         };
 
-        query();
+        if (sn) {
+            query(sn);
+        } else {
+            // SN no está en la metadata del ticket — buscarlo en el detalle del servicio (cliente WispHub)
+            const svcId = String(meta.id_servicio || (typeof meta.servicio !== 'object' ? meta.servicio : '') || '');
+            if (!svcId) { setSignalAutoFailed(true); return; }
+
+            setSignalAutoFetching(true);
+            WisphubService.getServiceDetail(svcId)
+                .then((detail: any) => {
+                    // El detalle del servicio puede traer el equipo ONU en distintos campos
+                    const snFromSvc = extractSn(detail) || extractSn(detail?.onu) || extractSn(detail?.equipo);
+                    console.log('[SmartOLT] SN desde servicio:', snFromSvc || '(no encontrado)', '| keys:', detail ? Object.keys(detail).filter((k: string) => /sn|serial|onu|equipo/i.test(k)) : []);
+                    if (snFromSvc) {
+                        query(snFromSvc);
+                    } else {
+                        setSignalAutoFailed(true);
+                        setSignalAutoFetching(false);
+                    }
+                })
+                .catch(() => { setSignalAutoFailed(true); setSignalAutoFetching(false); });
+        }
 
         return () => {
             if (smartoltRetryRef.current) clearTimeout(smartoltRetryRef.current);
         };
-    }, [actionType, selectedTask]);
+    }, [actionType, selectedTask, smartoltTrigger]);
 
     const toggleTicketExpansion = (id: string) => {
         const newSet = new Set(expandedTickets);
@@ -429,7 +455,7 @@ export function OperationsMyTasks() {
 
             // Guardamos el perfil completo para RBAC
             if (finalProfile) {
-                const { data: fullProfile } = await supabase.from('profiles').select('*').eq('id', finalProfile.id).maybeSingle();
+                const { data: fullProfile } = await supabase.from('profiles').select('id, full_name, email, wisphub_id, wisphub_mapping, role, operational_level, is_field_tech').eq('id', finalProfile.id).maybeSingle();
                 if (fullProfile) setUserProfile(fullProfile);
             }
             orgService.getCompanyName().then(name => setCompanyName(name));
@@ -517,6 +543,19 @@ export function OperationsMyTasks() {
         localStorage.setItem('tech_timeline_v1', JSON.stringify(newTimeline));
     };
 
+    const fetchCustomerHistory = async (serviceId: string, clientName: string, cedula: string, currentTicketId: string) => {
+        try {
+            const all = await WisphubService.getTicketsByClient(serviceId, cedula, 60);
+            const filtered = all
+                .filter(t => String(t.id) !== String(currentTicketId))
+                .slice(0, 20);
+            setCustomerHistory({ tickets: filtered, clientName, ticketId: String(currentTicketId) });
+            setShowHistoryModal(true);
+        } catch (e) {
+            console.error('[fetchCustomerHistory] Error:', e);
+        }
+    };
+
     const handleStartWork = async (wi: any) => {
         const proc    = wi.workflow_activities?.workflow_processes;
         const ticketId = String(proc?.reference_id ?? '').trim();
@@ -584,6 +623,35 @@ export function OperationsMyTasks() {
 
             // Mover a sub-pestaña En Progreso
             setActiveSubTab('en_progreso');
+
+            // Historial de antecedentes: obtener detalle fresco de WispHub (fire-and-forget)
+            // Se usa getTicketDetail para tener cedula/id_servicio completos aunque el metadata
+            // local venga del endpoint de lista (que omite esos campos).
+            WisphubService.getTicketDetail(ticketId).then(detail => {
+                const src = detail || proc?.metadata || {};
+                const svcRaw = src.id_servicio || src.servicio;
+                const svcId = typeof svcRaw === 'object' && svcRaw !== null
+                    ? String(svcRaw.id_servicio || svcRaw.id || '')
+                    : String(svcRaw || '');
+                const cedula = src.cedula
+                    || (typeof src.servicio === 'object' ? src.servicio?.cedula : '')
+                    || (typeof src.cliente === 'object' ? src.cliente?.cedula : '')
+                    || '';
+                if (svcId || (cedula && cedula.length > 3)) {
+                    fetchCustomerHistory(svcId, src.nombre_cliente || '', cedula, ticketId);
+                }
+            }).catch(() => {
+                // Fallback al metadata local si WispHub no responde
+                const meta = proc?.metadata || {};
+                const svcRaw = meta.id_servicio || meta.servicio;
+                const svcId = typeof svcRaw === 'object' && svcRaw !== null
+                    ? String(svcRaw.id_servicio || svcRaw.id || '')
+                    : String(svcRaw || '');
+                const cedula = meta.cedula || '';
+                if (svcId || (cedula && cedula.length > 3)) {
+                    fetchCustomerHistory(svcId, meta.nombre_cliente || '', cedula, ticketId);
+                }
+            });
 
             if (ok) {
                 dispatchToast('Ticket iniciado', 'success', `Ticket #${ticketId} — fecha de inicio registrada en WispHub.`);
@@ -834,7 +902,11 @@ export function OperationsMyTasks() {
                 } else {
                     if (myTasks.length === 0) setSyncing(true);
                     console.log('[OperationsMyTasks] 🔄 Sincronización en segundo plano iniciada...');
-                    await WorkflowService.syncMyTickets();
+                    // Timeout de 45s para evitar que la UI quede bloqueada si WispHub tarda
+                    await Promise.race([
+                        WorkflowService.syncMyTickets(),
+                        new Promise<void>(resolve => setTimeout(resolve, 45000)),
+                    ]);
                 }
             } catch (syncError: any) {
                 const is500 = syncError?.message?.includes('500') || syncError?.status === 500;
@@ -1168,6 +1240,17 @@ export function OperationsMyTasks() {
                                         </div>
                                     </div>
                                     <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-2 md:pb-0 scrollbar-hide snap-x">
+                                        {/* Ver Historial — visible después de iniciar si hay historial cargado para este ticket */}
+                                        {timelineStatus[ticketId]?.started && customerHistory?.ticketId === ticketId && (
+                                            <button
+                                                onClick={() => setShowHistoryModal(true)}
+                                                className="px-3 py-2 bg-amber-50 text-amber-700 border border-amber-100 rounded-xl text-[10px] font-bold uppercase transition-all flex items-center gap-1.5 shrink-0 hover:bg-amber-100"
+                                                title="Ver antecedentes del cliente"
+                                            >
+                                                <Clock size={12} /> Ver Historial
+                                            </button>
+                                        )}
+
                                         {/* Botón de Inicio si no ha empezado */}
                                         {!timelineStatus[ticketId]?.started && (
                                             <button
@@ -1368,6 +1451,25 @@ export function OperationsMyTasks() {
                                             <label className="text-[11px] font-black text-zinc-800 uppercase flex items-center gap-2 tracking-widest">
                                                 <Activity size={14} className={clsx(signalAutoFetching ? "text-blue-400 animate-pulse" : signalAutoFailed ? "text-orange-400" : "text-emerald-500")} />
                                                 Potencia (dBm)
+                                                <button
+                                                    type="button"
+                                                    disabled={signalAutoFetching}
+                                                    onClick={() => {
+                                                        setSignal('');
+                                                        setSignalAutoFailed(false);
+                                                        setSmartoltTrigger(t => t + 1);
+                                                    }}
+                                                    className={clsx(
+                                                        'ml-auto flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wide border transition-all',
+                                                        signalAutoFetching
+                                                            ? 'opacity-50 cursor-not-allowed bg-zinc-50 border-zinc-200 text-zinc-400'
+                                                            : 'bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100'
+                                                    )}
+                                                    title="Consultar señal en SmartOLT"
+                                                >
+                                                    <RefreshCw size={9} className={signalAutoFetching ? 'animate-spin' : ''} />
+                                                    {signalAutoFetching ? 'Consultando…' : 'Recargar'}
+                                                </button>
                                             </label>
                                             <div className="relative">
                                                 <input
@@ -1751,6 +1853,129 @@ export function OperationsMyTasks() {
                                         })()}
                                     </>
                                 )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal de Antecedentes de Soporte */}
+            {showHistoryModal && customerHistory && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setShowHistoryModal(false)} />
+                    <div className="relative z-10 bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col">
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100">
+                            <div>
+                                <h3 className="text-sm font-black text-zinc-900 uppercase tracking-wide flex items-center gap-2">
+                                    <Activity size={14} className="text-amber-500" /> Antecedentes de Soporte
+                                </h3>
+                                <p className="text-[10px] text-zinc-500 mt-0.5">
+                                    {customerHistory.clientName || 'Cliente'} — Últimos 60 días
+                                </p>
+                            </div>
+                            <button onClick={() => { setShowHistoryModal(false); setHistoryFilter(''); }} className="p-1.5 hover:bg-zinc-100 rounded-full text-zinc-400 hover:text-zinc-600 transition-colors">
+                                <X size={16} />
+                            </button>
+                        </div>
+
+                        {/* Buscador libre */}
+                        <div className="px-5 pt-3 pb-2 border-b border-zinc-100">
+                            <input
+                                type="text"
+                                value={historyFilter}
+                                onChange={e => setHistoryFilter(e.target.value)}
+                                placeholder="Buscar en asunto, estado, técnico, notas…"
+                                className="w-full text-[11px] px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100 placeholder:text-zinc-400"
+                                autoFocus
+                            />
+                        </div>
+
+                        <div className="overflow-y-auto flex-1 px-5 py-4">
+                            {(() => {
+                                const q = historyFilter.trim().toLowerCase();
+                                const visible = q
+                                    ? customerHistory.tickets.filter(t => {
+                                        const fields = [
+                                            t.asunto,
+                                            t.nombre_estado,
+                                            t.nombre_tecnico,
+                                            t.descripcion,
+                                            t.ultima_respuesta?.texto,
+                                            String(t.id),
+                                        ].map(f => (f || '').toLowerCase());
+                                        return fields.some(f => f.includes(q));
+                                    })
+                                    : customerHistory.tickets;
+                                if (visible.length === 0) return (
+                                    <div className="text-center py-10">
+                                        <CheckCircle2 size={36} className="text-emerald-400 mx-auto mb-3" />
+                                        <p className="text-sm font-bold text-zinc-700">{q ? 'Sin resultados para tu búsqueda' : 'Sin antecedentes de soporte recientes'}</p>
+                                        <p className="text-[11px] text-zinc-400 mt-1">{q ? 'Intenta con otra palabra clave' : 'para este cliente en los últimos 365 días'}</p>
+                                    </div>
+                                );
+                                return (
+                                <div className="space-y-3">
+                                    <p className="text-[10px] text-zinc-500 mb-2">
+                                        Este cliente presentó los siguientes tickets recientemente:
+                                    </p>
+                                    {visible.map(t => (
+                                        <div key={t.id} className="p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                                            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                                <span className="text-[9px] font-black text-zinc-500 bg-zinc-200/70 px-2 py-0.5 rounded-md">
+                                                    {t.fecha_creacion
+                                                        ? new Date(t.fecha_creacion).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })
+                                                        : '—'}
+                                                </span>
+                                                <span className={clsx(
+                                                    'text-[9px] font-black px-2 py-0.5 rounded-md uppercase',
+                                                    t.id_estado === 4 && 'bg-zinc-100 text-zinc-500',
+                                                    t.id_estado === 3 && 'bg-blue-50 text-blue-600',
+                                                    t.id_estado === 2 && 'bg-amber-50 text-amber-600',
+                                                    t.id_estado === 1 && 'bg-red-50 text-red-500',
+                                                )}>
+                                                    {t.nombre_estado}
+                                                </span>
+                                                <span className="text-[9px] text-zinc-400 font-mono">#{t.id}</span>
+                                            </div>
+                                            <p className="text-[11px] font-bold text-zinc-800 leading-tight">{t.asunto}</p>
+                                            {t.respuestas_tecnico?.length > 0 ? (
+                                                <div className="mt-2 space-y-1.5">
+                                                    <p className="text-[9px] font-black text-amber-600 uppercase tracking-wide">Hilo de respuestas ({t.respuestas_tecnico.length})</p>
+                                                    {t.respuestas_tecnico.map((r: any, i: number) => (
+                                                        <div key={i} className="pl-2.5 border-l-2 border-amber-200">
+                                                            {r.fecha && (
+                                                                <p className="text-[8px] text-zinc-400 mb-0.5">
+                                                                    {new Date(r.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                                    {r.autor ? ` · ${r.autor}` : ''}
+                                                                </p>
+                                                            )}
+                                                            <p className="text-[10px] text-zinc-600 leading-relaxed">{r.texto.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}</p>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : t.descripcion ? (
+                                                <div className="mt-2 pl-2.5 border-l-2 border-zinc-200">
+                                                    <p className="text-[9px] font-black text-zinc-400 uppercase mb-0.5 tracking-wide">Problema reportado</p>
+                                                    <p className="text-[10px] text-zinc-500 leading-relaxed">{t.descripcion.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}</p>
+                                                </div>
+                                            ) : (
+                                                <p className="text-[10px] text-zinc-400 italic mt-1.5">Sin notas registradas</p>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                                ); })()}
+                        </div>
+
+                        <div className="px-5 py-3 border-t border-zinc-100 flex items-center justify-between">
+                            <p className="text-[10px] text-zinc-400">
+                                {customerHistory.tickets.length} ticket{customerHistory.tickets.length !== 1 ? 's' : ''} encontrado{customerHistory.tickets.length !== 1 ? 's' : ''}
+                            </p>
+                            <button
+                                onClick={() => setShowHistoryModal(false)}
+                                className="px-5 py-2 bg-zinc-900 text-white text-[11px] font-black uppercase rounded-xl hover:bg-zinc-700 transition-colors"
+                            >
+                                Entendido
                             </button>
                         </div>
                     </div>

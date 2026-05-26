@@ -72,7 +72,6 @@ export const WorkflowService = {
         if (!tickets || tickets.length === 0) return;
 
         // Traer metadata existente en una sola consulta para preservar campos CRM
-        // (started_at, validation_rejected, pending_validation, etc.)
         const refIds = tickets.map(t => String(t.id));
         const { data: existing } = await supabase
             .from('workflow_processes')
@@ -80,25 +79,28 @@ export const WorkflowService = {
             .in('reference_id', refIds);
         const existingMap = new Map((existing || []).map((r: any) => [r.reference_id, r.metadata || {}]));
 
-        for (const t of tickets) {
+        // Construir todas las filas con metadata fusionada
+        const rows = tickets.map(t => {
             const ref = String(t.id);
             const prevMeta = existingMap.get(ref) || {};
-            // WispHub data sobreescribe campos de WispHub;
-            // campos propios del CRM (started_at, validation_*, pending_*, id_estado local) se preservan.
             const mergedMeta = { ...prevMeta, ...t };
+            return {
+                reference_id: ref,
+                process_type: 'Ticket AXCES',
+                title: t.asunto || `Ticket #${t.id}`,
+                status: (t.id_estado === 3 || t.id_estado === 4) ? 'CO' : 'PE',
+                metadata: mergedMeta,
+                priority: t.prioridad === 'Alta' ? 3 : t.prioridad === 'Media' ? 2 : 1
+            };
+        });
 
+        // Upsert masivo en lotes de 50 (una sola petición HTTP por lote en vez de N peticiones)
+        const BATCH = 50;
+        for (let i = 0; i < rows.length; i += BATCH) {
             const { error } = await supabase
                 .from('workflow_processes')
-                .upsert({
-                    reference_id: ref,
-                    process_type: 'Ticket AXCES',
-                    title: t.asunto || `Ticket #${t.id}`,
-                    status: (t.id_estado === 3 || t.id_estado === 4) ? 'CO' : 'PE',
-                    metadata: mergedMeta,
-                    priority: t.prioridad === 'Alta' ? 3 : t.prioridad === 'Media' ? 2 : 1
-                }, { onConflict: 'reference_id' });
-
-            if (error) console.error(`[Radar] Error sincronizando ticket ${t.id}:`, error);
+                .upsert(rows.slice(i, i + BATCH), { onConflict: 'reference_id' });
+            if (error) console.error(`[Radar] Error en upsert masivo lote ${i / BATCH + 1}:`, error);
         }
     },
 
@@ -1398,7 +1400,7 @@ export const WorkflowService = {
             console.log(`[Sync] 👤 Session User: ${user.email} (UID: ${user.id})`);
 
             // 1.1 Intentar resolver perfil por ID o por Email (Fallback)
-            let { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
+            let { data: profile } = await supabase.from('profiles').select('id, full_name, email, wisphub_id, wisphub_mapping, role, operational_level, is_field_tech').eq('id', user.id).maybeSingle();
 
             if (!profile && user.email) {
                 console.log(`[Sync] 🔍 Profile not found by UID. Trying by email: ${user.email}`);
@@ -1410,7 +1412,7 @@ export const WorkflowService = {
 
                 if (emailProfile) {
                     profile = emailProfile;
-                    console.log(`[Sync] ✅ Profile recovered via email match: ${profile.id}`);
+                    console.log(`[Sync] ✅ Profile recovered via email match: ${emailProfile.id}`);
                 }
             }
 
@@ -1479,27 +1481,45 @@ export const WorkflowService = {
                 return false;
             }
 
-            // 3. Recursive Ticket Fetching & Local Filter (Deep 30 days vs Normal 7 days)
+            // 3. Recursive Ticket Fetching & Local Filter
             // --- ESTRATEGIA DE SINCRONIZACIÓN POR NIVELES ---
-            // FASE 1: ABIERTOS (60 días) - Prioritario para que no se pierdan tareas pendientes.
+            // FASE 1: ABIERTOS (sin límite de fecha) - Trae TODOS los tickets abiertos históricos.
             const now = new Date();
-            const pastOpen = new Date();
-            pastOpen.setDate(now.getDate() - 60);
-            const openStartDate = pastOpen.toISOString().split('T')[0];
             const endDateStr = new Date(now.getTime() + 86400000).toISOString().split('T')[0];
 
-            console.log(`[Sync:N1] 🔍 Buscando Tareas ABIERTAS en ventana de 60 días (${openStartDate} -> ${endDateStr})...`);
-            
+            console.log(`[Sync:N1] 🔍 Buscando Tareas ABIERTAS (sin límite de fecha)...`);
+
             let allApiTickets: any[] = [];
-            
+
             try {
-                const { results: openResults } = await WisphubService.getAllTicketsPage(1, { 
-                    startDate: openStartDate, 
-                    endDate: endDateStr,
-                    status: '1,2' 
-                });
-                if (openResults) allApiTickets = [...openResults];
-                console.log(`[Sync:N1] ✅ Fase Abiertos completada: ${openResults?.length || 0} encontrados.`);
+                const tecId = staffMember?.id ? String(staffMember.id) : undefined;
+
+                if (tecId) {
+                    // Ruta rápida: WispHub filtra por técnico en servidor.
+                    // Solo devuelve los tickets de este técnico → muy pocos, sin límite de fecha.
+                    const [res1, res2] = await Promise.all([
+                        WisphubService.getAllTickets({ status: '1', tecnicoId: tecId }),
+                        WisphubService.getAllTickets({ status: '2', tecnicoId: tecId }),
+                    ]);
+                    const merged = new Map<string, any>();
+                    [...res1, ...res2].forEach(t => merged.set(String(t.id), t));
+                    allApiTickets = Array.from(merged.values());
+                    console.log(`[Sync:N1] ✅ Ruta rápida (tecnico=${tecId}): ${allApiTickets.length} tickets.`);
+                } else {
+                    // Ruta lenta (sin ID numérico): limitar a 30 días para no colgar la UI.
+                    // El filtro local por nombre se aplica en FASE 4.
+                    const past30 = new Date();
+                    past30.setDate(past30.getDate() - 30);
+                    const startDate30 = past30.toISOString().split('T')[0];
+                    const [res1, res2] = await Promise.all([
+                        WisphubService.getAllTickets({ status: '1', startDate: startDate30 }),
+                        WisphubService.getAllTickets({ status: '2', startDate: startDate30 }),
+                    ]);
+                    const merged = new Map<string, any>();
+                    [...res1, ...res2].forEach(t => merged.set(String(t.id), t));
+                    allApiTickets = Array.from(merged.values());
+                    console.log(`[Sync:N1] ✅ Ruta normal (30d, sin tecnico): ${allApiTickets.length} tickets.`);
+                }
             } catch (e) {
                 console.error("[Sync:N1] ⚠️ Error en fase abiertos:", e);
             }
@@ -1543,11 +1563,16 @@ export const WorkflowService = {
 
             for (const ticket of allApiTickets) {
                 try {
-                    // FILTRADO ESTRICTO POR NOMBRE (Sugerencia Usuario): 
-                    // Comparamos el campo 'tecnico' del ticket con el nombre oficial resuelto (Mario Vasquez)
                     const incomingTechName = normalize(ticket.tecnico || ticket.nombre_tecnico || '');
+                    const incomingTechRaw = String(ticket.tecnico || '').trim();
+                    const incomingTechId = String(ticket.tecnico_id || '').trim();
 
-                    const isStrictlyMine = incomingTechName === normalize(techNameStr);
+                    const isStrictlyMine =
+                        incomingTechName === normalize(techNameStr) ||
+                        (staffMember?.id && incomingTechId === String(staffMember.id)) ||
+                        (staffMember?.usuario && normalize(incomingTechRaw) === normalize(staffMember.usuario)) ||
+                        normalize(incomingTechRaw) === normalize(targetUsername) ||
+                        incomingTechId === targetUsername;
 
                     if (isStrictlyMine) {
                         myApiTicketIds.push((ticket.id || ticket.id_ticket).toString());
@@ -1870,26 +1895,35 @@ export const WorkflowService = {
 
     async syncGlobalTickets(daysBack: number = 30, onProgress?: (current: number, total: number) => void) {
         try {
-            console.log(`[GlobalSync] 🌍 Iniciando sincronización global de ${daysBack} días...`);
+            console.log(`[GlobalSync] 🌍 Iniciando sincronización global...`);
 
-            const now = new Date();
+            // 1a. Tickets ABIERTOS: sin límite de fecha para capturar todos, sin importar antigüedad
+            const openTickets = await WisphubService.getAllTickets({ status: '1,2,5' }, onProgress);
+            console.log(`[GlobalSync] 📬 Tickets abiertos recibidos: ${openTickets.length}`);
+
+            // 1b. Tickets CERRADOS: solo los últimos daysBack días (no necesitamos todo el historial)
             const pastDate = new Date();
-            pastDate.setDate(now.getDate() - daysBack);
+            pastDate.setDate(pastDate.getDate() - daysBack);
             const startDateStr = pastDate.toISOString().split('T')[0];
+            const closedTickets = await WisphubService.getAllTickets({ startDate: startDateStr, status: '3,4' }, onProgress);
+            console.log(`[GlobalSync] 📪 Tickets cerrados recientes: ${closedTickets.length}`);
 
-            // 1. Obtener todos los tickets del periodo sin filtro de técnico
-            const allApiTickets = await WisphubService.getAllTickets({
-                startDate: startDateStr
-            }, onProgress);
+            // Deduplicar por ID (por si algún ticket aparece en ambas listas)
+            const allMap = new Map<string, any>();
+            [...openTickets, ...closedTickets].forEach(t => allMap.set(String(t.id), t));
+            const allApiTickets = Array.from(allMap.values());
 
-            console.log(`[GlobalSync] 📦 Recibidos ${allApiTickets.length} tickets de WispHub.`);
+            console.log(`[GlobalSync] 📦 Total a sincronizar: ${allApiTickets.length} tickets de WispHub.`);
 
-            // 2. Upsert Masivo (Espejo)
+            // 2. Upsert Masivo en paralelo (lotes de 8 tickets simultáneos)
             const allProfiles = await this.getPlatformUsers();
-
-            for (const ticket of allApiTickets) {
-                await this.syncSingleTicketMirror(ticket, allProfiles, undefined, { autoAssign: false });
-                // No hay pausa aquí para procesar rápido las métricas globales
+            const PARALLEL = 8;
+            for (let i = 0; i < allApiTickets.length; i += PARALLEL) {
+                const batch = allApiTickets.slice(i, i + PARALLEL);
+                await Promise.all(batch.map(ticket =>
+                    this.syncSingleTicketMirror(ticket, allProfiles, undefined, { autoAssign: false })
+                ));
+                if (onProgress) onProgress(Math.min(i + PARALLEL, allApiTickets.length), allApiTickets.length);
             }
 
             console.log("[GlobalSync] ✅ Sincronización Global COMPLETADA.");

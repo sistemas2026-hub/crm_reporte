@@ -669,7 +669,7 @@ export const WisphubService = {
         }
     },
 
-    async getAllTickets(filters?: { startDate?: string; endDate?: string; status?: string }, onProgress?: (current: number, total: number) => void): Promise<any[]> {
+    async getAllTickets(filters?: { startDate?: string; endDate?: string; status?: string; tecnicoId?: string }, onProgress?: (current: number, total: number) => void): Promise<any[]> {
         try {
             // Asegurar que el staff esté cargado para mapear nombres reales
             await this.getStaff();
@@ -703,18 +703,17 @@ export const WisphubService = {
             if (filters?.status && !filters.status.includes(',')) {
                 baseUrl += `&estado=${filters.status}`; // OJO: WispHub API requiere 'estado', NO 'id_estado'
             }
+            if (filters?.tecnicoId) {
+                baseUrl += `&tecnico=${encodeURIComponent(filters.tecnicoId)}`;
+            }
 
             // Lógica de fechas
             if (filters?.startDate || filters?.endDate) {
                 const start = filters.startDate || '2024-01-01';
                 const end = filters.endDate || new Date().toISOString().split('T')[0];
                 baseUrl += `&fecha_creacion_0=${start}&fecha_creacion_1=${end}`;
-            } else if (filters?.status && (filters.status === '1' || filters.status === '2' || filters.status === '5')) {
-                const past = new Date();
-                past.setDate(past.getDate() - 60); // 60 días para buscar tickets abiertos
-                const start = past.toISOString().split('T')[0];
-                const end = new Date().toISOString().split('T')[0];
-                baseUrl += `&fecha_creacion_0=${start}&fecha_creacion_1=${end}`;
+            } else if (filters?.status && filters.status.split(',').some(s => ['1', '2', '5'].includes(s.trim()))) {
+                // Sin filtro de fecha: al menos un estado abierto (1=Abierto, 2=En Progreso, 5=En Espera)
             } else {
                 const past = new Date();
                 past.setDate(past.getDate() - 7); // Reducido de 30 a 7
@@ -745,8 +744,8 @@ export const WisphubService = {
             if (onProgress) onProgress(uniqueTicketsMap.size, totalCount);
 
             const remainingOffsets = [];
-            // Aumentamos el límite de seguridad a 2,000 (40 páginas) para no saturar memoria/vps
-            for (let offset = pageSize; offset < totalCount && offset < 2000; offset += pageSize) {
+            // Límite de 5,000 tickets (100 páginas) para cubrir bases grandes sin saturar memoria
+            for (let offset = pageSize; offset < totalCount && offset < 5000; offset += pageSize) {
                 remainingOffsets.push(offset);
             }
 
@@ -765,7 +764,6 @@ export const WisphubService = {
                     if (onProgress) onProgress(uniqueTicketsMap.size, totalCount);
                 }
                 await new Promise(r => setTimeout(r, 150));
-                if (uniqueTicketsMap.size >= 1000) break;
             }
 
             const finalResults = Array.from(uniqueTicketsMap.values());
@@ -1053,7 +1051,42 @@ export const WisphubService = {
                 t.username ||
                 t.user ||
                 t.usuario_mikrotik || 'N/A',
-            estado_servicio: serviceObj?.estado || clientObj?.estado || t.estado_servicio || 'Activo'
+            estado_servicio: serviceObj?.estado || clientObj?.estado || t.estado_servicio || 'Activo',
+            ultima_respuesta: (() => {
+                if (!t.respuestas || !Array.isArray(t.respuestas) || t.respuestas.length === 0) return null;
+                const AUTO_PATTERNS = [
+                    'llegada al destino', 'llegada al sitio', 'ha llegado a la ubicación',
+                    'inicio de trabajo', 'ha sido iniciado', 'inició el ticket', 'fecha_inicio',
+                    'pendiente de validación', 'validación rechazada',
+                    'técnico inició', 'fue iniciado por',
+                ];
+                const meaningful = t.respuestas.filter((r: any) => {
+                    const text = (r.respuesta || '').toLowerCase();
+                    return text.trim().length > 3 && !AUTO_PATTERNS.some(p => text.includes(p));
+                });
+                if (!meaningful.length) return null;
+                const last = meaningful[0]; // WispHub ordena de más reciente a más antigua
+                return { texto: last.respuesta || '', fecha: last.created || '' };
+            })(),
+            respuestas_tecnico: (() => {
+                if (!t.respuestas || !Array.isArray(t.respuestas) || t.respuestas.length === 0) return [];
+                const AUTO_PATTERNS = [
+                    'llegada al destino', 'llegada al sitio', 'ha llegado a la ubicación',
+                    'inicio de trabajo', 'ha sido iniciado', 'inició el ticket', 'fecha_inicio',
+                    'pendiente de validación', 'validación rechazada',
+                    'técnico inició', 'fue iniciado por',
+                ];
+                return t.respuestas
+                    .filter((r: any) => {
+                        const text = (r.respuesta || '').toLowerCase();
+                        return text.trim().length > 3 && !AUTO_PATTERNS.some(p => text.includes(p));
+                    })
+                    .map((r: any) => ({
+                        texto: r.respuesta || '',
+                        fecha: r.created || r.fecha || '',
+                        autor: r.autor || r.username || r.nombre || r.tecnico || '',
+                    }));
+            })(),
         };
     },
 
@@ -1533,6 +1566,71 @@ export const WisphubService = {
         } catch (error) {
             return [];
         }
+    },
+
+    async getTicketsByClient(serviceId: string, cedula: string, daysBack: number = 60): Promise<any[]> {
+        // WispHub no acepta fecha_creacion_0/1 combinado con search= (devuelve 400).
+        // Para ?servicio= sí se puede pasar fechas; para ?search= filtramos en cliente.
+        const cedTrimmed = (cedula || '').trim();
+        const cedClean   = cedTrimmed.replace(/^0+/, '');
+        const svcStr     = String(serviceId || '').trim();
+
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - daysBack);
+        const cutoffStr = cutoff.toISOString().split('T')[0];
+        const todayStr  = new Date().toISOString().split('T')[0];
+
+        const queriesSet = new Set<string>();
+        // Para el endpoint ?servicio= pasamos el rango de fechas al servidor
+        if (svcStr) {
+            queriesSet.add(`${BASE_URL}/tickets/?servicio=${encodeURIComponent(svcStr)}&limit=200&ordering=-id&fecha_creacion_0=${cutoffStr}&fecha_creacion_1=${todayStr}`);
+            queriesSet.add(`${BASE_URL}/tickets/?search=${encodeURIComponent(svcStr)}&limit=100&ordering=-id`);
+        }
+        // Búsqueda por cédula: filtramos fecha en cliente (search= no acepta fecha)
+        if (cedTrimmed.length > 3) {
+            queriesSet.add(`${BASE_URL}/tickets/?search=${encodeURIComponent(cedTrimmed)}&limit=100&ordering=-id`);
+            if (cedClean !== cedTrimmed) {
+                queriesSet.add(`${BASE_URL}/tickets/?search=${encodeURIComponent(cedClean)}&limit=100&ordering=-id`);
+            }
+        }
+        if (!queriesSet.size) return [];
+
+        const uniqueMap = new Map<string, any>();
+
+        await Promise.all(Array.from(queriesSet).map(async url => {
+            try {
+                const res = await safeFetch(url);
+                if (!res.ok) return;
+                const data = await res.json();
+                (data.results || []).forEach((t: any) => {
+                    const mapped = this.mapTicket(t);
+                    // Para URLs de search= aplicar filtro de fecha en cliente
+                    if (url.includes('search=') && mapped.fecha_creacion && new Date(mapped.fecha_creacion) < cutoff) return;
+                    const mappedSvc = String(mapped.servicio || mapped.id_servicio || '').trim();
+                    const svcMatch = svcStr.length > 0 && (mappedSvc === svcStr || mappedSvc.endsWith(svcStr) || svcStr.endsWith(mappedSvc));
+                    const cedMapped = String(mapped.cedula || '').replace(/^0+/, '').trim();
+                    const cedMatch  = cedTrimmed.length > 3 && (cedMapped === cedClean || cedMapped === cedTrimmed || String(mapped.cedula || '').trim() === cedTrimmed);
+                    if (svcMatch || cedMatch) uniqueMap.set(mapped.id, mapped);
+                });
+            } catch { /* no bloquear */ }
+        }));
+
+        const listResults = Array.from(uniqueMap.values()).sort((a, b) => Number(b.id) - Number(a.id));
+
+        // Enriquecer con detalle completo (incluye respuestas[] → ultima_respuesta)
+        // El endpoint de lista no devuelve respuestas; se necesita /tickets/{id}/
+        const detailed = await Promise.all(
+            listResults.map(async t => {
+                try {
+                    const raw = await this.getTicketRaw(t.id);
+                    return raw ? this.mapTicket(raw) : t;
+                } catch {
+                    return t; // fallback al ticket de lista si falla el detalle
+                }
+            })
+        );
+
+        return detailed;
     },
 
     async getTicketsByTechnician(technicianId: number | string, page: number = 1): Promise<any[]> {

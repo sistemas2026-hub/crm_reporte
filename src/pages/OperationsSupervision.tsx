@@ -48,7 +48,7 @@ export function OperationsSupervision() {
     const [loading, setLoading] = useState(false);
     const [totalCount, setTotalCount] = useState(0);
     const [page, setPage] = useState(0);
-    const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
+    const [pageSize, setPageSize] = useState<25 | 50 | 100 | 9999>(50);
 
     // ── Pestañas de estado
     const [activeTab, setActiveTab] = useState<'todos' | 'pendientes' | 'en_progreso' | 'en_validacion' | 'finalizados'>('todos');
@@ -222,6 +222,7 @@ export function OperationsSupervision() {
 
     const loadPage = useCallback(async () => {
         setLoading(true);
+        setProcesses([]); // Limpiar antes de cargar para evitar diff masivo de DOM
         try {
             let query = supabase
                 .from('workflow_processes')
@@ -229,10 +230,18 @@ export function OperationsSupervision() {
                     id, reference_id, created_at, title, process_type, status, metadata, escalation_level,
                     workflow_activities(name, status, workflow_workitems(id, participant_id, status))
                 `, { count: 'exact' })
-                .gte('created_at', dateRange.start)
-                .lte('created_at', dateRange.end + 'T23:59:59')
+                .eq('process_type', 'Ticket AXCES')
+                .eq('status', activeTab === 'finalizados' ? 'CO' : 'PE')
                 .order('created_at', { ascending: false })
                 .range(page * pageSize, (page + 1) * pageSize - 1);
+
+            // Para tickets activos (PE) no aplicamos filtro de fecha: pueden ser históricos.
+            // Solo los finalizados se filtran por rango para no cargar años de registros cerrados.
+            if (activeTab === 'finalizados') {
+                query = query
+                    .gte('created_at', dateRange.start)
+                    .lte('created_at', dateRange.end + 'T23:59:59');
+            }
 
             if (filterEscalated === 'yes') query = query.gte('escalation_level', 2);
             if (filterEscalated === 'no') query = query.lt('escalation_level', 2);
@@ -249,7 +258,7 @@ export function OperationsSupervision() {
         } finally {
             setLoading(false);
         }
-    }, [dateRange, page, pageSize, filterEscalated, filterBarrio, searchTerm]);
+    }, [dateRange, page, pageSize, filterEscalated, filterBarrio, searchTerm, activeTab]);
 
     // ── Escuchar escalamientos desde MyTasks para refrescar procesos/conteos
     useEffect(() => {
@@ -727,12 +736,13 @@ export function OperationsSupervision() {
                     {/* Selector de registros por página */}
                     <select
                         value={pageSize}
-                        onChange={e => { setPageSize(Number(e.target.value) as 25 | 50 | 100); setPage(0); }}
+                        onChange={e => { setPageSize(Number(e.target.value) as 25 | 50 | 100 | 9999); setPage(0); }}
                         className="bg-white border border-zinc-200 rounded-xl py-2 px-3 text-xs font-bold outline-none focus:border-zinc-400 cursor-pointer text-zinc-700"
                     >
                         <option value={25}>25 / pág</option>
                         <option value={50}>50 / pág</option>
                         <option value={100}>100 / pág</option>
+                        <option value={9999}>Todos</option>
                     </select>
 
                     <span className="ml-auto text-[11px] font-bold text-zinc-400">
@@ -795,7 +805,7 @@ export function OperationsSupervision() {
             {/* ── Tabla principal ── */}
             <div className="bg-white border border-zinc-200 rounded-3xl overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
-                    <table className="w-full">
+                    <table className="w-full" translate="no">
                         <thead className="bg-zinc-50 border-b border-zinc-200">
                             <tr>
                                 {activeTab !== 'finalizados' && (
@@ -1058,7 +1068,13 @@ export function OperationsSupervision() {
                 </div>
 
                 {/* ── Paginación ── */}
-                {totalPages > 1 && (
+                {pageSize === 9999 ? (
+                    <div className="border-t border-zinc-100 px-6 py-3 flex items-center justify-between">
+                        <span className="text-xs text-zinc-400 font-medium">
+                            Mostrando todos · {totalCount.toLocaleString()} registros
+                        </span>
+                    </div>
+                ) : totalPages > 1 && (
                     <div className="border-t border-zinc-100 px-6 py-3 flex items-center justify-between">
                         <span className="text-xs text-zinc-400 font-medium">
                             Página {page + 1} de {totalPages} · {totalCount.toLocaleString()} registros

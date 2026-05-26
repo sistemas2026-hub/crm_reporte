@@ -202,16 +202,34 @@ export const orgService = {
 
         _cachePromise = (async () => {
             try {
-                const { data: { user } } = await supabase.auth.getUser();
-                if (!user) return { org: null, settings: null };
+                // Intentar validar JWT con red; si falla, usar sesión local como fallback.
+                // getUser() falla en recargas rápidas (AbortError) o timeouts transitorios.
+                let userId: string | null = null;
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    userId = user?.id ?? null;
+                } catch { /* continúa con fallback */ }
+
+                if (!userId) {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    userId = session?.user?.id ?? null;
+                }
+
+                if (!userId) {
+                    _cachePromise = null; // permitir reintento al próximo ciclo
+                    return { org: null, settings: null };
+                }
 
                 const { data: profile } = await supabase
                     .from('profiles')
                     .select('org_id')
-                    .eq('id', user.id)
+                    .eq('id', userId)
                     .maybeSingle();
 
-                if (!profile?.org_id) return { org: null, settings: null };
+                if (!profile?.org_id) {
+                    _cachePromise = null;
+                    return { org: null, settings: null };
+                }
 
                 const [{ data: org }, { data: settings }] = await Promise.all([
                     supabase.from('organizations').select('id, name, slug').eq('id', profile.org_id).single(),
@@ -223,6 +241,7 @@ export const orgService = {
 
                 return { org: _orgCache, settings: _settingsCache };
             } catch {
+                _cachePromise = null; // permitir reintento en lugar de quedar cacheado como null
                 return { org: null, settings: null };
             }
         })();

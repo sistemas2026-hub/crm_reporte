@@ -13,13 +13,31 @@ interface OperationsHeaderProps {
 export function OperationsHeader({ title, description, onSyncComplete, customAction }: OperationsHeaderProps) {
     const [isSyncing, setIsSyncing] = useState(false);
 
-    const handleAutoSync = async (forceFull: boolean = false) => {
+    const [syncMode, setSyncMode] = useState<'quick' | 'full' | null>(null);
+
+    const handleQuickSync = async () => {
+        if (isSyncing) return;
         setIsSyncing(true);
+        setSyncMode('quick');
         try {
-            await WorkflowService.syncWithWispHub(forceFull);
+            await WorkflowService.radarSyncToday();
             if (onSyncComplete) onSyncComplete();
         } finally {
             setIsSyncing(false);
+            setSyncMode(null);
+        }
+    };
+
+    const handleFullSync = async () => {
+        if (isSyncing) return;
+        setIsSyncing(true);
+        setSyncMode('full');
+        try {
+            await WorkflowService.fullMirrorResync();
+            if (onSyncComplete) onSyncComplete();
+        } finally {
+            setIsSyncing(false);
+            setSyncMode(null);
         }
     };
 
@@ -35,28 +53,28 @@ export function OperationsHeader({ title, description, onSyncComplete, customAct
             <div className="flex flex-wrap gap-2 items-center ml-9 md:ml-0">
                 {customAction}
                 <button
-                    onClick={() => handleAutoSync(false)}
+                    onClick={handleQuickSync}
                     disabled={isSyncing}
                     className={clsx(
                         "px-4 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wide flex items-center gap-2 transition-all border",
                         isSyncing ? "bg-zinc-100 text-zinc-400 border-zinc-200" : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300 shadow-sm"
                     )}
-                    title="Sincronización rápida (últimos 7 días)"
+                    title="Sincronización rápida: tickets creados hoy"
                 >
-                    <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-                    {isSyncing ? "Sincronizando..." : "Rápida (7d)"}
+                    <RefreshCw size={14} className={syncMode === 'quick' ? "animate-spin" : ""} />
+                    {syncMode === 'quick' ? "Sincronizando..." : "Rápida (7d)"}
                 </button>
                 <button
-                    onClick={() => handleAutoSync(true)}
+                    onClick={handleFullSync}
                     disabled={isSyncing}
                     className={clsx(
                         "px-4 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wide flex items-center gap-2 transition-all shadow-sm hover:shadow",
                         isSyncing ? "bg-zinc-100 text-zinc-400" : "bg-zinc-900 text-white hover:bg-black"
                     )}
-                    title="Sincronización TOTAL (Sin límite de fecha - Trae TODO el historial)"
+                    title="Sincronización global: trae TODOS los tickets activos de WispHub sin importar fecha"
                 >
-                    <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-                    {isSyncing ? "Descargando..." : "Total (∞)"}
+                    <RefreshCw size={14} className={syncMode === 'full' ? "animate-spin" : ""} />
+                    {syncMode === 'full' ? "Descargando..." : "Total (∞)"}
                 </button>
             </div>
         </header>
