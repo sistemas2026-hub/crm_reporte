@@ -298,6 +298,7 @@ export function Clients() {
     const [apiResults, setApiResults] = useState<WispHubClient[]>([]);
     const [searching, setSearching] = useState(false);
     const [ticketClient, setTicketClient] = useState<WispHubClient | null>(null);
+    const [selectedClient, setSelectedClient] = useState<WispHubClient | null>(null);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const loadPage = useCallback(async (p: number) => {
@@ -370,14 +371,24 @@ export function Clients() {
                             </p>
                         </div>
                     </div>
-                    <button
-                        onClick={() => loadPage(page)}
-                        disabled={loading}
-                        className="flex items-center gap-2 px-3 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded-xl text-xs font-bold transition-all disabled:opacity-50"
-                    >
-                        <RefreshCcw size={13} className={loading ? 'animate-spin' : ''} />
-                        Actualizar
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => loadPage(page)}
+                            disabled={loading}
+                            className="flex items-center gap-2 px-3 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded-xl text-xs font-bold transition-all disabled:opacity-50"
+                        >
+                            <RefreshCcw size={13} className={loading ? 'animate-spin' : ''} />
+                            Actualizar
+                        </button>
+                        <button
+                            onClick={() => selectedClient && setTicketClient(selectedClient)}
+                            disabled={!selectedClient}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900 hover:bg-zinc-700 text-white rounded-xl text-xs font-black uppercase tracking-wide transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            <Plus size={13} />
+                            {selectedClient ? `Ticket — ${selectedClient.nombre.split(' ')[0]}` : 'Crear Ticket'}
+                        </button>
+                    </div>
                 </div>
 
                 <div className="bg-white border border-zinc-200 rounded-3xl overflow-hidden shadow-sm">
@@ -390,7 +401,6 @@ export function Clients() {
                                     <th className="px-4 pt-4 pb-1 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Cédula</th>
                                     <th className="px-4 pt-4 pb-1 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Estado</th>
                                     <th className="px-4 pt-4 pb-1 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Plan</th>
-                                    <th className="px-4 pt-4 pb-1 w-10" />
                                 </tr>
                                 <tr>
                                     <td className="px-4 pb-3" />
@@ -406,13 +416,12 @@ export function Clients() {
                                     <td className="px-4 pb-3">
                                         <ColSearch value={filters.plan} onChange={v => setCol('plan', v)} placeholder="Buscar plan..." />
                                     </td>
-                                    <td className="px-4 pb-3" />
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-zinc-100">
                                 {loading && !hasFilter ? (
                                     <tr>
-                                        <td colSpan={6} className="p-12 text-center">
+                                        <td colSpan={5} className="p-12 text-center">
                                             <div className="flex flex-col items-center gap-2">
                                                 <Loader2 size={20} className="animate-spin text-zinc-400" />
                                                 <span className="text-xs text-zinc-400 font-medium">Cargando clientes...</span>
@@ -421,51 +430,57 @@ export function Clients() {
                                     </tr>
                                 ) : displayList.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="p-12 text-center text-xs text-zinc-400 font-medium">
+                                        <td colSpan={5} className="p-12 text-center text-xs text-zinc-400 font-medium">
                                             {hasFilter ? 'No se encontraron clientes.' : 'Sin datos.'}
                                         </td>
                                     </tr>
                                 ) : (
-                                    displayList.map(c => (
-                                        <tr key={`${c.id_servicio}-${c.cedula}`} className="hover:bg-zinc-50 transition-colors group">
-                                            <td className="px-4 py-3">
-                                                <span className="text-[10px] font-bold text-zinc-400 font-mono">#{c.id_servicio}</span>
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span className="text-sm font-bold text-zinc-900 uppercase">
-                                                    <Highlight text={c.nombre || '—'} query={filters.nombre} />
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span className="text-sm font-mono font-semibold text-zinc-700 bg-zinc-100 px-2 py-0.5 rounded-lg">
-                                                    <Highlight text={c.cedula || '—'} query={filters.cedula} />
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${
-                                                    c.estado?.toLowerCase() === 'activo'
-                                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                                        : 'bg-zinc-100 text-zinc-500 border-zinc-200'
-                                                }`}>
-                                                    <Highlight text={c.estado || '—'} query={filters.estado} />
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span className="text-xs text-zinc-600 font-medium">
-                                                    <Highlight text={c.plan_internet?.nombre || '—'} query={filters.plan} />
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3 text-right">
-                                                <button
-                                                    onClick={() => setTicketClient(c)}
-                                                    title="Crear ticket"
-                                                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wide transition-all active:scale-95"
-                                                >
-                                                    <Plus size={11} /> Ticket
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    ))
+                                    displayList.map(c => {
+                                        const isSelected = selectedClient?.id_servicio === c.id_servicio;
+                                        return (
+                                            <tr
+                                                key={`${c.id_servicio}-${c.cedula}`}
+                                                onClick={() => setSelectedClient(isSelected ? null : c)}
+                                                className={`cursor-pointer transition-colors ${
+                                                    isSelected
+                                                        ? 'bg-zinc-900'
+                                                        : 'hover:bg-zinc-50'
+                                                }`}
+                                            >
+                                                <td className="px-4 py-3">
+                                                    <span className={`text-[10px] font-bold font-mono ${isSelected ? 'text-zinc-400' : 'text-zinc-400'}`}>
+                                                        #{c.id_servicio}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`text-sm font-bold uppercase ${isSelected ? 'text-white' : 'text-zinc-900'}`}>
+                                                        <Highlight text={c.nombre || '—'} query={filters.nombre} />
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`text-sm font-mono font-semibold px-2 py-0.5 rounded-lg ${isSelected ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-100 text-zinc-700'}`}>
+                                                        <Highlight text={c.cedula || '—'} query={filters.cedula} />
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                                                        isSelected
+                                                            ? 'bg-zinc-700 text-zinc-200 border-zinc-600'
+                                                            : c.estado?.toLowerCase() === 'activo'
+                                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                                                : 'bg-zinc-100 text-zinc-500 border-zinc-200'
+                                                    }`}>
+                                                        <Highlight text={c.estado || '—'} query={filters.estado} />
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`text-xs font-medium ${isSelected ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                                                        <Highlight text={c.plan_internet?.nombre || '—'} query={filters.plan} />
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
                                 )}
                             </tbody>
                         </table>
