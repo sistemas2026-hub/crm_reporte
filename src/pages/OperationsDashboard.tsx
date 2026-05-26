@@ -1,8 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
-import useSWR from 'swr';
 import { WisphubService, whNormalize } from '../lib/wisphub';
 import { supabase } from '../lib/supabase';
-import { WorkflowService } from '../lib/workflowService';
+import { useWisphubTickets } from '../hooks/useWisphubTickets';
 import {
     AlertTriangle,
     Clock,
@@ -63,100 +62,25 @@ export function OperationsDashboard() {
     const [sortConfig, setSortConfig] = useState<SortConfig>(null);
     const [showFilters, setShowFilters] = useState(false);
 
-    // SWR Fetcher - ESTRATEGIA: ESPEJO LOCAL (REALTIME)
-    const fetcher = async () => {
-        console.log('[SWR-Dashboard] Recuperando tickets desde Espejo Local...');
-
-        // 1. Cargar Tickets desde Supabase Mirror
-        const mirroredTickets = await WorkflowService.getOperationalTicketsMirror();
-
-        // 2. Filtrar solo los activos (Pendientes 1, Proceso 2, Rezagados 5)
-        const activeTickets = mirroredTickets
-            .filter(t => [1, 2, 5, '1', '2', '5'].includes(t.id_estado))
-            .sort((a, b) => new Date(b.fecha_creacion).getTime() - new Date(a.fecha_creacion).getTime());
-
-        // 3. Calcular Stats
-        const newStats = activeTickets.reduce((acc: any, ticket: any) => {
-            acc.total++;
-            if (ticket.sla_status === 'critico') acc.critico++;
-            else if (ticket.sla_status === 'amarillo') acc.amarillo++;
-            else acc.verde++;
-            return acc;
-        }, { total: 0, critico: 0, amarillo: 0, verde: 0 });
-
-        // 4. Cargar Asuntos (Fallback a WispHub ya que son estáticos)
-        const officialSubjects = await WisphubService.getTicketSubjects();
-
-        return {
-            tickets: activeTickets,
-            stats: newStats,
-            subjects: officialSubjects
-        };
-    };
-
-    const { data: swrData, isValidating, mutate } = useSWR(
-        ['operations_dashboard_data'],
-        fetcher,
-        {
-            revalidateOnFocus: true,
-            revalidateIfStale: true,
-            keepPreviousData: true,
-            dedupingInterval: 60000,
-            onSuccess: (data) => {
-                // Persistencia local para evitar pantallas en blanco ante fallos de red
-                if (data && data.tickets.length > 0) {
-                    localStorage.setItem('cached_operations_data', JSON.stringify({
-                        ...data,
-                        cached_at: new Date().toISOString()
-                    }));
-                }
-            }
-        }
+    // Consulta directa a WispHub — todos los estados (1=Nuevo, 2=En Progreso, 3=Resuelto, 4=Cerrado)
+    const { tickets: allTickets, loading: isValidating, refresh: mutate, lastUpdated } = useWisphubTickets(
+        { status: ['1', '2', '3', '4'] },
+        { autoRefresh: true, refreshIntervalMs: 5 * 60 * 1000 }
     );
 
-    // Suscripción Realtime para el Dashboard
+    // Asuntos (catálogo estático de WispHub, se cargan una sola vez)
+    const [subjects, setSubjects] = useState<any[]>([]);
     useEffect(() => {
-        const channel = supabase
-            .channel('dashboard_mirror_sync')
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'workflow_processes',
-                    filter: `process_type=eq.Ticket AXCES`
-                },
-                () => {
-                    console.log('[Dashboard-Realtime] 🔄 Cambio detectado. Recalculando...');
-                    mutate();
-                }
-            )
-            .subscribe();
+        WisphubService.getTicketSubjects().then(setSubjects).catch(() => {});
+    }, []);
 
-        return () => {
-            supabase.removeChannel(channel);
-        };
-    }, [mutate]);
-
-    // Lógica de recuperación de caché si SWR no tiene datos
-    const cachedData = useMemo(() => {
-        if (!swrData) {
-            const saved = localStorage.getItem('cached_operations_data');
-            if (saved) {
-                try {
-                    return JSON.parse(saved);
-                } catch (e) {
-                    return null;
-                }
-            }
-        }
-        return null;
-    }, [swrData]);
-
-    const activeData = swrData || cachedData;
-    const allTickets = activeData?.tickets || [];
-    const stats = activeData?.stats || { total: 0, critico: 0, amarillo: 0, verde: 0 };
-    const subjects = activeData?.subjects || [];
+    const stats = useMemo(() => allTickets.reduce((acc: any, t: any) => {
+        acc.total++;
+        if (t.sla_status === 'critico') acc.critico++;
+        else if (t.sla_status === 'amarillo') acc.amarillo++;
+        else acc.verde++;
+        return acc;
+    }, { total: 0, critico: 0, amarillo: 0, verde: 0 }), [allTickets]);
 
     // Extraer lista de técnicos únicos
     const uniqueTechnicians = useMemo(() => {
