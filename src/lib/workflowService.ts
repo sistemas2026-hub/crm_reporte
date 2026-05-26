@@ -1400,7 +1400,7 @@ export const WorkflowService = {
             console.log(`[Sync] 👤 Session User: ${user.email} (UID: ${user.id})`);
 
             // 1.1 Intentar resolver perfil por ID o por Email (Fallback)
-            let { data: profile } = await supabase.from('profiles').select('id, full_name, email, wisphub_id, wisphub_mapping, role, operational_level, is_field_tech').eq('id', user.id).maybeSingle();
+            let { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
 
             if (!profile && user.email) {
                 console.log(`[Sync] 🔍 Profile not found by UID. Trying by email: ${user.email}`);

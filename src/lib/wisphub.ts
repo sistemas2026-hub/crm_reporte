@@ -1081,11 +1081,13 @@ export const WisphubService = {
                         const text = (r.respuesta || '').toLowerCase();
                         return text.trim().length > 3 && !AUTO_PATTERNS.some(p => text.includes(p));
                     })
-                    .map((r: any) => ({
-                        texto: r.respuesta || '',
-                        fecha: r.created || r.fecha || '',
-                        autor: r.autor || r.username || r.nombre || r.tecnico || '',
-                    }));
+                    .map((r: any) => {
+                        const rawAutor = r.autor || r.username || r.nombre || r.tecnico;
+                        const autor = typeof rawAutor === 'object' && rawAutor !== null
+                            ? (rawAutor.nombre || rawAutor.usuario || rawAutor.username || rawAutor.full_name || '')
+                            : String(rawAutor || '');
+                        return { texto: r.respuesta || '', fecha: r.created || r.fecha || '', autor };
+                    });
             })(),
         };
     },

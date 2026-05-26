@@ -455,7 +455,7 @@ export function OperationsMyTasks() {
 
             // Guardamos el perfil completo para RBAC
             if (finalProfile) {
-                const { data: fullProfile } = await supabase.from('profiles').select('id, full_name, email, wisphub_id, wisphub_mapping, role, operational_level, is_field_tech').eq('id', finalProfile.id).maybeSingle();
+                const { data: fullProfile } = await supabase.from('profiles').select('*').eq('id', finalProfile.id).maybeSingle();
                 if (fullProfile) setUserProfile(fullProfile);
             }
             orgService.getCompanyName().then(name => setCompanyName(name));
@@ -545,11 +545,26 @@ export function OperationsMyTasks() {
 
     const fetchCustomerHistory = async (serviceId: string, clientName: string, cedula: string, currentTicketId: string) => {
         try {
-            const all = await WisphubService.getTicketsByClient(serviceId, cedula, 60);
+            let effectiveCedula = cedula;
+            let effectiveName = clientName;
+
+            // Si no tenemos cédula pero sí svcId, buscarla via ?id_servicio= (no /clientes/{id}/)
+            if (!effectiveCedula && serviceId) {
+                const client = await WisphubService.getClientForSmartOlt(undefined, Number(serviceId)).catch(() => null);
+                if (client) {
+                    effectiveCedula = client.cedula || client.dni || '';
+                    if (!effectiveName || effectiveName.startsWith('SERVICIO:')) {
+                        const n = client.nombre || client.nombre_completo || client.cliente_nombre || '';
+                        if (n) effectiveName = n;
+                    }
+                }
+            }
+
+            const all = await WisphubService.getTicketsByClient(serviceId, effectiveCedula, 60);
             const filtered = all
                 .filter(t => String(t.id) !== String(currentTicketId))
                 .slice(0, 20);
-            setCustomerHistory({ tickets: filtered, clientName, ticketId: String(currentTicketId) });
+            setCustomerHistory({ tickets: filtered, clientName: effectiveName, ticketId: String(currentTicketId) });
             setShowHistoryModal(true);
         } catch (e) {
             console.error('[fetchCustomerHistory] Error:', e);
