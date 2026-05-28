@@ -34,7 +34,7 @@ const getEscalationSuggestion = (asunto: string) => {
     }
     return null;
 };
-const dispatchToast = (message: string, type: 'success' | 'error' | 'info' | 'loading', description?: string, id?: string) => {
+const dispatchToast = (message: string, type: 'success' | 'error' | 'info' | 'loading' | 'warning', description?: string, id?: string) => {
     window.dispatchEvent(new CustomEvent('app:toast', {
         detail: { message, type, description, id, duration: type === 'loading' ? 0 : 4000 }
     }));
@@ -655,6 +655,21 @@ export function OperationsMyTasks() {
                 ok = await WisphubService.setTicketStartTime(ticketId);
             }
 
+            // Respuesta segmentada: POST /answer/ — mensaje oficial de inicio en el hilo del ticket
+            const ANSWER_INICIAR = "📍 El técnico ha iniciado la gestión del ticket desde la App.";
+            const answerOk = await WisphubService.postTicketAnswer(ticketId, ANSWER_INICIAR).catch(() => false);
+            if (!answerOk) {
+                dispatchToast('Respuesta no publicada en WispHub', 'warning', 'Sin conexión con WispHub. El estado local avanzó correctamente.');
+            } else {
+                supabase.from('ticket_actions').insert({
+                    ticket_id: String(ticketId),
+                    action_type: 'iniciar',
+                    respuesta_enviada: ANSWER_INICIAR,
+                    technician_id: currentUserIdRef.current,
+                    created_at: new Date().toISOString(),
+                }).catch(() => {});
+            }
+
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
             saveTimeline({ ...timelineStatus, [ticketId]: { ...timelineStatus[ticketId], started: true } });
 
@@ -761,6 +776,21 @@ export function OperationsMyTasks() {
             if (!ok) {
                 console.warn('[handleArrival] PUT falló, usando fallback PATCH fecha_inicio');
                 ok = await WisphubService.setTicketStartTime(ticketId);
+            }
+
+            // Respuesta segmentada: POST /answer/ — mensaje oficial de progreso en el hilo del ticket
+            const ANSWER_PROGRESO = "⚙️ Tarea en progreso: El técnico se encuentra trabajando en la solución.";
+            const answerOkProgreso = await WisphubService.postTicketAnswer(ticketId, ANSWER_PROGRESO).catch(() => false);
+            if (!answerOkProgreso) {
+                dispatchToast('Respuesta no publicada en WispHub', 'warning', 'Sin conexión con WispHub. El estado local avanzó correctamente.');
+            } else {
+                supabase.from('ticket_actions').insert({
+                    ticket_id: String(ticketId),
+                    action_type: 'en_progreso',
+                    respuesta_enviada: ANSWER_PROGRESO,
+                    technician_id: currentUserIdRef.current,
+                    created_at: new Date().toISOString(),
+                }).catch(() => {});
             }
 
             // Audit log local — independiente de WispHub

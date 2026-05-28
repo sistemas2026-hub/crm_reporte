@@ -1,4 +1,5 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { getRecordingLinkUrl } from '../../lib/jamInit';
 import { supabase, safeGetUser } from '../../lib/supabase';
 import {
     LogOut,
@@ -15,7 +16,8 @@ import {
     Bell,
     CheckCircle2,
     Info,
-    AlertTriangle
+    AlertTriangle,
+    Bug
 } from 'lucide-react';
 import { NAV_GROUPS } from '../../config/menu';
 import { WisphubService, type WispHubClient } from '../../lib/wisphub';
@@ -31,7 +33,7 @@ import { es } from 'date-fns/locale';
 interface Toast {
     id: string;
     message: string;
-    type: 'success' | 'error' | 'info' | 'loading';
+    type: 'success' | 'error' | 'info' | 'loading' | 'warning';
     description?: string;
 }
 
@@ -142,6 +144,15 @@ function SidebarContent({
                     {theme === 'light' ? <Moon size={14} className="group-hover:rotate-12 transition-transform" /> : <Sun size={14} className="group-hover:rotate-45 transition-transform" />}
                     <span>{theme === 'light' ? 'Mesa de Noche' : 'Luz de Día'}</span>
                 </button>
+                {import.meta.env.VITE_JAM_RECORDING_LINK_ID && (
+                    <button
+                        onClick={() => window.open(getRecordingLinkUrl(), '_blank')}
+                        className="w-full flex items-center gap-3 px-4 py-2 rounded-xl text-xs font-bold text-gray-400 hover:bg-white/5 hover:text-red-400 transition-all group"
+                    >
+                        <Bug size={14} className="group-hover:scale-110 transition-transform" />
+                        <span>Reportar Bug</span>
+                    </button>
+                )}
             </div>
         </div>
     );
@@ -662,12 +673,14 @@ export function Layout() {
                             toast.type === 'success' ? "bg-emerald-600 border-emerald-500 text-white" :
                                 toast.type === 'error' ? "bg-red-600 border-red-500 text-white" :
                                     toast.type === 'loading' ? "bg-indigo-600 border-indigo-500 text-white" :
-                                        "bg-amber-500 border-amber-400 text-white"
+                                        toast.type === 'warning' ? "bg-amber-500 border-amber-400 text-white" :
+                                            "bg-slate-700 border-slate-600 text-white"
                         )}
                     >
                         <div className="shrink-0 mt-0.5">
                             {toast.type === 'success' && <CheckCircle2 className="w-5 h-5 text-white" />}
                             {toast.type === 'error' && <AlertTriangle className="w-5 h-5 text-white" />}
+                            {toast.type === 'warning' && <AlertTriangle className="w-5 h-5 text-white" />}
                             {toast.type === 'info' && <Info className="w-5 h-5 text-white" />}
                             {toast.type === 'loading' && <Loader2 className="w-5 h-5 animate-spin text-white" />}
                         </div>

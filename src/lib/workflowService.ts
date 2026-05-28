@@ -941,19 +941,24 @@ export const WorkflowService = {
 
             // 3. Actualizar nivel en proceso + marcar escalated_to para Supervisión
             const escalatedToName = targetTechnicianId
-                ? (await supabase.from('profiles').select('full_name').or(`id.eq.${isUUID(targetTechnicianId) ? targetTechnicianId : '00000000-0000-0000-0000-000000000000'},wisphub_id.eq.${targetTechnicianId}`).maybeSingle())?.data?.full_name || targetTechnicianId
+                ? (await supabase.from('profiles').select('full_name').eq('id', isUUID(targetTechnicianId) ? targetTechnicianId : '00000000-0000-0000-0000-000000000000').maybeSingle())?.data?.full_name || `Nivel ${nextLevel}`
                 : `Nivel ${nextLevel}`;
-            await supabase
+            const existingMeta = item.workflow_activities?.workflow_processes?.metadata ?? {};
+            const { error: metaUpdateError } = await supabase
                 .from('workflow_processes')
                 .update({
+                    escalation_level: nextLevel,
                     metadata: {
-                        ...item.workflow_activities.workflow_processes.metadata,
+                        ...existingMeta,
                         current_level: nextLevel,
                         escalated_to: escalatedToName,
                         escalated_at: new Date().toISOString()
                     }
                 })
                 .eq('id', processId);
+            if (metaUpdateError) {
+                console.error('[escalateWorkItem] Error guardando escalated_to:', metaUpdateError);
+            }
 
             // 4. Crear o recuperar la actividad
             let nextActivity;

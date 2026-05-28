@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
+    "@jam.dev/sdk": "^0.0.6",
     "@supabase/supabase-js": "^2.45.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/leaflet": "^1.9.21",

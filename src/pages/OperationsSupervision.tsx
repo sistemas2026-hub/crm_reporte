@@ -977,13 +977,17 @@ export function OperationsSupervision() {
 
                                             {/* Escalado A */}
                                             <td className="p-4 text-center">
-                                                {p.metadata?.escalated_to ? (
-                                                    <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-lg truncate max-w-[110px] block mx-auto">
-                                                        {p.metadata.escalated_to}
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-zinc-300 text-[10px]">—</span>
-                                                )}
+                                                {(() => {
+                                                    const label = p.metadata?.escalated_to
+                                                        || ((p.escalation_level ?? 0) >= 2 ? `Nivel ${p.escalation_level}` : null);
+                                                    return label ? (
+                                                        <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-lg truncate max-w-[110px] block mx-auto">
+                                                            {label}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-zinc-300 text-[10px]">—</span>
+                                                    );
+                                                })()}
                                             </td>
 
                                             {/* SLA semáforo dinámico */}
