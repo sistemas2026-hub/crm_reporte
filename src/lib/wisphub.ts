@@ -669,7 +669,7 @@ export const WisphubService = {
         }
     },
 
-    async getAllTickets(filters?: { startDate?: string; endDate?: string; status?: string; tecnicoId?: string }, onProgress?: (current: number, total: number) => void): Promise<any[]> {
+    async getAllTickets(filters?: { startDate?: string; endDate?: string; status?: string; tecnicoId?: string; maxResults?: number; pageSize?: number }, onProgress?: (current: number, total: number) => void): Promise<any[]> {
         try {
             // Asegurar que el staff esté cargado para mapear nombres reales
             await this.getStaff();
@@ -697,7 +697,7 @@ export const WisphubService = {
                 return resultArr;
             }
 
-            const pageSize = 50;
+            const pageSize = filters?.pageSize ?? 50;
             let baseUrl = `${BASE_URL}/tickets/?limit=${pageSize}&offset=0&ordering=-id`;
 
             if (filters?.status && !filters.status.includes(',')) {
@@ -744,8 +744,8 @@ export const WisphubService = {
             if (onProgress) onProgress(uniqueTicketsMap.size, totalCount);
 
             const remainingOffsets = [];
-            // Límite de 5,000 tickets (100 páginas) para cubrir bases grandes sin saturar memoria
-            for (let offset = pageSize; offset < totalCount && offset < 5000; offset += pageSize) {
+            const hardCap = filters?.maxResults ?? 5000;
+            for (let offset = pageSize; offset < totalCount && offset < hardCap; offset += pageSize) {
                 remainingOffsets.push(offset);
             }
 
@@ -1570,7 +1570,7 @@ export const WisphubService = {
         }
     },
 
-    async getTicketsByClient(serviceId: string, cedula: string, daysBack: number = 60): Promise<any[]> {
+    async getTicketsByClient(serviceId: string, cedula: string, daysBack: number = 60, skipDetail: boolean = false): Promise<any[]> {
         // WispHub no acepta fecha_creacion_0/1 combinado con search= (devuelve 400).
         // Para ?servicio= sí se puede pasar fechas; para ?search= filtramos en cliente.
         const cedTrimmed = (cedula || '').trim();
@@ -1618,6 +1618,8 @@ export const WisphubService = {
         }));
 
         const listResults = Array.from(uniqueMap.values()).sort((a, b) => Number(b.id) - Number(a.id));
+
+        if (skipDetail) return listResults;
 
         // Enriquecer con detalle completo (incluye respuestas[] → ultima_respuesta)
         // El endpoint de lista no devuelve respuestas; se necesita /tickets/{id}/

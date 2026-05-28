@@ -3,6 +3,7 @@ import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, Ale
 import { supabase, safeGetUser } from '../lib/supabase';
 import { WorkflowService, REQUIREMENTS } from '../lib/workflowService';
 import { WisphubService } from '../lib/wisphub';
+import { WisphubCache } from '../lib/wisphubCache';
 import { SmartOLTService } from '../lib/smartolt';
 import { convertToJpeg, type ImageMetadata } from '../lib/imageUtils';
 import { syncQueueService } from '../lib/syncQueueService';
@@ -75,6 +76,8 @@ export function OperationsMyTasks() {
     const [customerHistory, setCustomerHistory] = useState<{ tickets: any[]; clientName: string; ticketId: string } | null>(null);
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [historyFilter, setHistoryFilter] = useState('');
+    const [historyDetails, setHistoryDetails] = useState<Record<string, { respuestas_tecnico: any[]; loaded: boolean }>>({});
+    const historyAbortRef = useRef(false);
     const [signalAutoFetching, setSignalAutoFetching] = useState(false);
     const [signalAutoFailed, setSignalAutoFailed] = useState(false);
     const [smartoltTrigger, setSmartoltTrigger] = useState(0);
@@ -545,10 +548,10 @@ export function OperationsMyTasks() {
 
     const fetchCustomerHistory = async (serviceId: string, clientName: string, cedula: string, currentTicketId: string) => {
         try {
+            historyAbortRef.current = false;
             let effectiveCedula = cedula;
             let effectiveName = clientName;
 
-            // Si no tenemos cédula pero sí svcId, buscarla via ?id_servicio= (no /clientes/{id}/)
             if (!effectiveCedula && serviceId) {
                 const client = await WisphubService.getClientForSmartOlt(undefined, Number(serviceId)).catch(() => null);
                 if (client) {
@@ -560,12 +563,59 @@ export function OperationsMyTasks() {
                 }
             }
 
-            const all = await WisphubService.getTicketsByClient(serviceId, effectiveCedula, 60);
-            const filtered = all
+            const svcId = String(serviceId || '').trim();
+            const ced   = String(effectiveCedula || '').replace(/^0+/, '').trim();
+
+            const cached = WisphubCache.getCached();
+            const all = cached.length > 0 ? cached : await WisphubCache.getAll();
+
+            const found = all
+                .filter(t =>
+                    String(t.servicio ?? '') === svcId ||
+                    String(t.id_servicio ?? '') === svcId ||
+                    (ced.length > 3 && String(t.cedula || '').replace(/^0+/, '').trim() === ced)
+                )
                 .filter(t => String(t.id) !== String(currentTicketId))
+                .sort((a: any, b: any) => Number(b.id) - Number(a.id))
                 .slice(0, 20);
-            setCustomerHistory({ tickets: filtered, clientName: effectiveName, ticketId: String(currentTicketId) });
+
+            setHistoryDetails({});
+            setCustomerHistory({ tickets: found, clientName: effectiveName, ticketId: String(currentTicketId) });
             setShowHistoryModal(true);
+
+            // Cargar respuestas completas en lotes de 3
+            const BATCH = 3;
+            const AUTO_PATTERNS = [
+                'llegada al destino', 'llegada al sitio', 'ha llegado a la ubicación',
+                'inicio de trabajo', 'ha sido iniciado', 'inició el ticket',
+                'pendiente de validación', 'validación rechazada',
+            ];
+            for (let i = 0; i < found.length; i += BATCH) {
+                if (historyAbortRef.current) break;
+                const batch = found.slice(i, i + BATCH);
+                await Promise.all(batch.map(async (t: any) => {
+                    try {
+                        const raw = await WisphubService.getTicketRaw(t.id);
+                        if (historyAbortRef.current) return;
+                        const respuestas_tecnico = (raw?.respuestas || [])
+                            .filter((r: any) => {
+                                const text = (r.respuesta || '').toLowerCase();
+                                return text.trim().length > 3 && !AUTO_PATTERNS.some(p => text.includes(p));
+                            })
+                            .map((r: any) => ({
+                                texto: (r.respuesta || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(),
+                                fecha: r.created || '',
+                                autor: r.autor || '',
+                            }));
+                        if (!historyAbortRef.current)
+                            setHistoryDetails(prev => ({ ...prev, [t.id]: { respuestas_tecnico, loaded: true } }));
+                    } catch {
+                        if (!historyAbortRef.current)
+                            setHistoryDetails(prev => ({ ...prev, [t.id]: { respuestas_tecnico: [], loaded: true } }));
+                    }
+                }));
+                if (i + BATCH < found.length) await new Promise(r => setTimeout(r, 250));
+            }
         } catch (e) {
             console.error('[fetchCustomerHistory] Error:', e);
         }
@@ -1888,7 +1938,7 @@ export function OperationsMyTasks() {
                                     {customerHistory.clientName || 'Cliente'} — Últimos 60 días
                                 </p>
                             </div>
-                            <button onClick={() => { setShowHistoryModal(false); setHistoryFilter(''); }} className="p-1.5 hover:bg-zinc-100 rounded-full text-zinc-400 hover:text-zinc-600 transition-colors">
+                            <button onClick={() => { historyAbortRef.current = true; setShowHistoryModal(false); setHistoryFilter(''); }} className="p-1.5 hover:bg-zinc-100 rounded-full text-zinc-400 hover:text-zinc-600 transition-colors">
                                 <X size={16} />
                             </button>
                         </div>
@@ -1933,7 +1983,11 @@ export function OperationsMyTasks() {
                                     <p className="text-[10px] text-zinc-500 mb-2">
                                         Este cliente presentó los siguientes tickets recientemente:
                                     </p>
-                                    {visible.map(t => (
+                                    {visible.map(t => {
+                                        const detail = historyDetails[t.id];
+                                        const respuestas = detail?.respuestas_tecnico ?? [];
+                                        const loaded = detail?.loaded ?? false;
+                                        return (
                                         <div key={t.id} className="p-3 bg-zinc-50 rounded-xl border border-zinc-100">
                                             <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                                                 <span className="text-[9px] font-black text-zinc-500 bg-zinc-200/70 px-2 py-0.5 rounded-md">
@@ -1953,10 +2007,15 @@ export function OperationsMyTasks() {
                                                 <span className="text-[9px] text-zinc-400 font-mono">#{t.id}</span>
                                             </div>
                                             <p className="text-[11px] font-bold text-zinc-800 leading-tight">{t.asunto}</p>
-                                            {t.respuestas_tecnico?.length > 0 ? (
+                                            {!loaded ? (
+                                                <div className="mt-2 flex items-center gap-1.5 text-zinc-300">
+                                                    <Clock size={10} className="animate-pulse" />
+                                                    <span className="text-[9px]">Cargando respuestas…</span>
+                                                </div>
+                                            ) : respuestas.length > 0 ? (
                                                 <div className="mt-2 space-y-1.5">
-                                                    <p className="text-[9px] font-black text-amber-600 uppercase tracking-wide">Hilo de respuestas ({t.respuestas_tecnico.length})</p>
-                                                    {t.respuestas_tecnico.map((r: any, i: number) => (
+                                                    <p className="text-[9px] font-black text-amber-600 uppercase tracking-wide">Hilo de respuestas ({respuestas.length})</p>
+                                                    {respuestas.map((r: any, i: number) => (
                                                         <div key={i} className="pl-2.5 border-l-2 border-amber-200">
                                                             {r.fecha && (
                                                                 <p className="text-[8px] text-zinc-400 mb-0.5">
@@ -1964,7 +2023,7 @@ export function OperationsMyTasks() {
                                                                     {r.autor ? ` · ${r.autor}` : ''}
                                                                 </p>
                                                             )}
-                                                            <p className="text-[10px] text-zinc-600 leading-relaxed">{r.texto.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}</p>
+                                                            <p className="text-[10px] text-zinc-600 leading-relaxed">{r.texto}</p>
                                                         </div>
                                                     ))}
                                                 </div>
@@ -1977,7 +2036,8 @@ export function OperationsMyTasks() {
                                                 <p className="text-[10px] text-zinc-400 italic mt-1.5">Sin notas registradas</p>
                                             )}
                                         </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                                 ); })()}
                         </div>
@@ -1987,7 +2047,7 @@ export function OperationsMyTasks() {
                                 {customerHistory.tickets.length} ticket{customerHistory.tickets.length !== 1 ? 's' : ''} encontrado{customerHistory.tickets.length !== 1 ? 's' : ''}
                             </p>
                             <button
-                                onClick={() => setShowHistoryModal(false)}
+                                onClick={() => { historyAbortRef.current = true; setShowHistoryModal(false); setHistoryFilter(''); }}
                                 className="px-5 py-2 bg-zinc-900 text-white text-[11px] font-black uppercase rounded-xl hover:bg-zinc-700 transition-colors"
                             >
                                 Entendido

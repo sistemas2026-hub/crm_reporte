@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Loader2, Users, RefreshCcw, ChevronLeft, ChevronRight,
-    Search, Plus, X, Paperclip, TicketCheck
+    Search, Plus, X, Paperclip, TicketCheck, History
 } from 'lucide-react';
 import { WisphubService, type WispHubClient, type WispHubStaff } from '../lib/wisphub';
 import { WisphubCache } from '../lib/wisphubCache';
@@ -77,6 +77,194 @@ function Combobox({ value, onChange, options, displayValue, placeholder }: {
                     ))}
                 </div>
             )}
+        </div>
+    );
+}
+
+// ─── Modal historial de tickets ───────────────────────────────────────────────
+
+const AUTO_REPLY_PATTERNS = [
+    'llegada al destino', 'llegada al sitio', 'ha llegado a la ubicación',
+    'inicio de trabajo', 'ha sido iniciado', 'inició el ticket', 'fecha_inicio',
+    'pendiente de validación', 'validación rechazada', 'técnico inició', 'fue iniciado por',
+];
+
+function TicketHistoryModal({ client, onClose }: { client: WispHubClient; onClose: () => void }) {
+    const [tickets, setTickets] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [replies, setReplies] = useState<Record<string, string | null>>({});
+    const abortRef = useRef(false);
+
+    useEffect(() => {
+        abortRef.current = false;
+        const svcId = String(client.id_servicio);
+        const ced   = String(client.cedula || '').replace(/^0+/, '').trim();
+
+        const applyFilter = (all: any[]) => {
+            if (abortRef.current) return;
+            const found = all.filter(t =>
+                String(t.servicio ?? '') === svcId ||
+                String(t.id_servicio ?? '') === svcId ||
+                (ced.length > 3 && String(t.cedula || '').replace(/^0+/, '').trim() === ced)
+            );
+            setTickets(found.sort((a, b) => Number(b.id) - Number(a.id)));
+        };
+
+        const cached = WisphubCache.getCached();
+        if (cached.length > 0) {
+            applyFilter(cached);
+            setLoading(false);
+        } else {
+            WisphubCache.getAll().then(applyFilter).finally(() => { if (!abortRef.current) setLoading(false); });
+        }
+        return () => { abortRef.current = true; };
+    }, [client.id_servicio, client.cedula]);
+
+    // Cargar última respuesta en lotes de 3 tras mostrar la lista
+    useEffect(() => {
+        if (tickets.length === 0) return;
+        abortRef.current = false;
+        const BATCH = 3;
+
+        (async () => {
+            for (let i = 0; i < tickets.length; i += BATCH) {
+                if (abortRef.current) break;
+                const batch = tickets.slice(i, i + BATCH);
+                await Promise.all(batch.map(async t => {
+                    try {
+                        const raw = await WisphubService.getTicketRaw(t.id);
+                        if (abortRef.current || !raw?.respuestas?.length) return;
+                        const meaningful = (raw.respuestas as any[]).filter(r => {
+                            const text = (r.respuesta || '').toLowerCase();
+                            return text.trim().length > 3 && !AUTO_REPLY_PATTERNS.some(p => text.includes(p));
+                        });
+                        const last = meaningful[0];
+                        const text = last
+                            ? (last.respuesta as string).replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim()
+                            : null;
+                        if (!abortRef.current) setReplies(prev => ({ ...prev, [t.id]: text }));
+                    } catch { if (!abortRef.current) setReplies(prev => ({ ...prev, [t.id]: null })); }
+                }));
+                if (i + BATCH < tickets.length) await new Promise(r => setTimeout(r, 250));
+            }
+        })();
+
+        return () => { abortRef.current = true; };
+    }, [tickets]);
+
+    const fmt = (d: string | null) => {
+        if (!d) return '—';
+        const dt = new Date(d);
+        if (isNaN(dt.getTime())) return '—';
+        return dt.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    };
+
+    const estadoCls = (idEstado: number) => {
+        if (idEstado === 4) return 'bg-zinc-100 text-zinc-500 border-zinc-200';
+        if (idEstado === 3) return 'bg-purple-50 text-purple-700 border-purple-200';
+        if (idEstado === 2) return 'bg-blue-50 text-blue-700 border-blue-200';
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col">
+                <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-100">
+                    <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center shrink-0">
+                            <History size={16} className="text-white" />
+                        </div>
+                        <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Historial de Tickets</p>
+                            <h2 className="text-sm font-black text-zinc-900 uppercase leading-tight">{client.nombre}</h2>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2 rounded-xl hover:bg-zinc-100 text-zinc-400 hover:text-zinc-700 transition-all">
+                        <X size={18} />
+                    </button>
+                </div>
+
+                <div className="overflow-y-auto flex-1">
+                    {loading ? (
+                        <div className="flex items-center justify-center h-48 gap-3 text-zinc-400">
+                            <Loader2 size={18} className="animate-spin" />
+                            <span className="text-xs font-medium">Cargando historial...</span>
+                        </div>
+                    ) : tickets.length === 0 ? (
+                        <div className="flex items-center justify-center h-48 text-xs text-zinc-400 font-medium">
+                            No se encontraron tickets para este cliente.
+                        </div>
+                    ) : (
+                        <table className="w-full">
+                            <thead className="bg-zinc-50 border-b border-zinc-200 sticky top-0">
+                                <tr>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">#Ticket</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Asunto</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Técnico</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Estado</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Abierto</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Cerrado</th>
+                                    <th className="px-4 py-3 text-left text-[10px] uppercase font-black tracking-widest text-zinc-400">Última respuesta</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-100">
+                                {tickets.map(t => {
+                                    const replyLoaded = t.id in replies;
+                                    const replyText = replies[t.id];
+                                    return (
+                                        <tr key={t.id} className="hover:bg-zinc-50 transition-colors">
+                                            <td className="px-4 py-3">
+                                                <span className="text-[10px] font-bold font-mono text-zinc-400">#{t.id}</span>
+                                            </td>
+                                            <td className="px-4 py-3 max-w-[180px]">
+                                                <span className="text-xs font-semibold text-zinc-800 line-clamp-2">{t.asunto}</span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className="text-xs text-zinc-600">{t.nombre_tecnico || '—'}</span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border whitespace-nowrap ${estadoCls(t.id_estado)}`}>
+                                                    {t.nombre_estado}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3 whitespace-nowrap">
+                                                <span className="text-[11px] text-zinc-500">{fmt(t.fecha_creacion)}</span>
+                                            </td>
+                                            <td className="px-4 py-3 whitespace-nowrap">
+                                                <span className="text-[11px] text-zinc-500">{fmt(t.fecha_final)}</span>
+                                            </td>
+                                            <td className="px-4 py-3 max-w-[220px]">
+                                                {!replyLoaded
+                                                    ? <Loader2 size={11} className="animate-spin text-zinc-300" />
+                                                    : replyText
+                                                        ? <span className="text-[11px] text-zinc-600 line-clamp-2">{replyText}</span>
+                                                        : <span className="text-[11px] text-zinc-300">—</span>
+                                                }
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+
+                <div className="flex items-center justify-between px-6 py-4 border-t border-zinc-100">
+                    <div className="flex flex-col gap-0.5">
+                        <span className="text-[11px] text-zinc-400 font-medium">
+                            {loading ? '' : `${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}`}
+                        </span>
+                        {!loading && (
+                            <span className="text-[10px] text-zinc-300">
+                                Abiertos y en progreso: historial completo · Cerrados: últimos 7 días
+                            </span>
+                        )}
+                    </div>
+                    <button onClick={onClose} className="px-5 py-2.5 text-xs font-bold text-zinc-600 hover:bg-zinc-100 rounded-xl transition-all">
+                        Cerrar
+                    </button>
+                </div>
+            </div>
         </div>
     );
 }
@@ -364,6 +552,7 @@ export function Clients() {
     const [apiResults, setApiResults] = useState<WispHubClient[]>([]);
     const [searching, setSearching] = useState(false);
     const [ticketClient, setTicketClient] = useState<WispHubClient | null>(null);
+    const [historyClient, setHistoryClient] = useState<WispHubClient | null>(null);
     const [selectedClient, setSelectedClient] = useState<WispHubClient | null>(null);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -445,6 +634,14 @@ export function Clients() {
                         >
                             <RefreshCcw size={13} className={loading ? 'animate-spin' : ''} />
                             Actualizar
+                        </button>
+                        <button
+                            onClick={() => selectedClient && setHistoryClient(selectedClient)}
+                            disabled={!selectedClient}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-black uppercase tracking-wide transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            <History size={13} />
+                            Historial
                         </button>
                         <button
                             onClick={() => selectedClient && setTicketClient(selectedClient)}
@@ -573,6 +770,9 @@ export function Clients() {
                 </div>
             </div>
 
+            {historyClient && (
+                <TicketHistoryModal client={historyClient} onClose={() => setHistoryClient(null)} />
+            )}
             {ticketClient && (
                 <TicketModal client={ticketClient} onClose={() => setTicketClient(null)} />
             )}

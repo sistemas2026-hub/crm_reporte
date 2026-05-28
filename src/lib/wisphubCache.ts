@@ -5,12 +5,15 @@
  * Supabase sigue siendo la fuente para el estado workflow (iniciado/validado/rechazado).
  *
  * Flujo:
- *   WispHub API → wisphubCache (TTL 5 min, módulo singleton) → páginas
+ *   WispHub API → wisphubCache (TTL 15 min, módulo singleton) → páginas
+ *
+ * Stale-while-revalidate: si el caché existe pero venció, se devuelven los datos
+ * viejos de inmediato y se inicia un refresh en background sin bloquear al caller.
  */
 import { WisphubService } from './wisphub';
 
-const TTL_MS = 5 * 60 * 1000; // 5 minutos
-const CLOSED_DAYS = 30;        // ventana para estados cerrado/resuelto
+const TTL_MS = 15 * 60 * 1000; // 15 minutos
+const CLOSED_DAYS = 7;         // ventana para estados cerrado/resuelto
 
 function daysAgo(n: number): string {
     const d = new Date();
@@ -42,10 +45,10 @@ async function fetchFromWisphub(): Promise<any[]> {
     const startClosed = daysAgo(CLOSED_DAYS);
     // Estados abiertos sin límite de fecha; cerrado/resuelto con ventana reciente
     const [open, inProgress, resolved, closed] = await Promise.all([
-        WisphubService.getAllTickets({ status: '1' }).catch(() => [] as any[]),
-        WisphubService.getAllTickets({ status: '2' }).catch(() => [] as any[]),
-        WisphubService.getAllTickets({ status: '3', startDate: startClosed }).catch(() => [] as any[]),
-        WisphubService.getAllTickets({ status: '4', startDate: startClosed }).catch(() => [] as any[]),
+        WisphubService.getAllTickets({ status: '1', pageSize: 200 }).catch(() => [] as any[]),
+        WisphubService.getAllTickets({ status: '2', pageSize: 200 }).catch(() => [] as any[]),
+        WisphubService.getAllTickets({ status: '3', startDate: startClosed, maxResults: 600, pageSize: 200 }).catch(() => [] as any[]),
+        WisphubService.getAllTickets({ status: '4', startDate: startClosed, maxResults: 600, pageSize: 200 }).catch(() => [] as any[]),
     ]);
     return mergeById([open, inProgress, resolved, closed]);
 }
@@ -72,11 +75,30 @@ export const WisphubCache = {
         return _cache?.tickets ?? [];
     },
 
-    /** Retorna todos los tickets (del caché o desde WispHub si vencido). */
+    /** Retorna todos los tickets. Stale-while-revalidate: si hay datos viejos los devuelve
+     *  de inmediato y dispara un refresh en background sin bloquear al caller. */
     async getAll(forceRefresh = false): Promise<any[]> {
-        if (!forceRefresh && !this.isStale()) {
-            return _cache!.tickets;
+        // Cache fresco → devolver de inmediato
+        if (!forceRefresh && _cache && !this.isStale()) {
+            return _cache.tickets;
         }
+
+        // Cache vencido pero existe → devolver datos viejos + refrescar en background
+        if (!forceRefresh && _cache && this.isStale()) {
+            if (!_inflightPromise) {
+                _inflightPromise = fetchFromWisphub()
+                    .then(tickets => {
+                        _cache = { tickets, fetchedAt: Date.now() };
+                        console.log(`[WisphubCache] ✅ background refresh: ${tickets.length} tickets`);
+                        return tickets;
+                    })
+                    .finally(() => { _inflightPromise = null; });
+            }
+            // No esperamos: devolvemos los datos actuales ya
+            return _cache.tickets;
+        }
+
+        // Cache vacío o forceRefresh → esperar el fetch antes de devolver
         if (!_inflightPromise) {
             _inflightPromise = fetchFromWisphub()
                 .then(tickets => {
@@ -125,9 +147,10 @@ export const WisphubCache = {
         _inflightPromise = null;
     },
 
-    /** Invalida y fuerza re-fetch inmediato. */
+    /** Invalida y fuerza re-fetch inmediato (espera el resultado, útil tras crear un ticket). */
     async refresh(): Promise<any[]> {
-        this.invalidate();
+        _cache = null; // invalida sin cancelar inflight existente
+        _inflightPromise = null;
         return this.getAll(true);
     },
 };
