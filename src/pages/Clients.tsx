@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Loader2, Users, RefreshCcw, ChevronLeft, ChevronRight,
-    Search, Plus, X, Paperclip, TicketCheck, History
+    Search, Plus, X, Paperclip, TicketCheck, History, FileUser
 } from 'lucide-react';
 import { WisphubService, type WispHubClient, type WispHubStaff } from '../lib/wisphub';
 import { WisphubCache } from '../lib/wisphubCache';
@@ -642,6 +642,14 @@ export function Clients() {
                         >
                             <History size={13} />
                             Historial
+                        </button>
+                        <button
+                            onClick={() => selectedClient && window.open(`/clientes/hoja-de-vida/${selectedClient.id_servicio}`, '_blank')}
+                            disabled={!selectedClient}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-black uppercase tracking-wide transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            <FileUser size={13} />
+                            Hoja de Vida
                         </button>
                         <button
                             onClick={() => selectedClient && setTicketClient(selectedClient)}

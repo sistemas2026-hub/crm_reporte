@@ -35,6 +35,7 @@ import InventorySlips from './pages/InventorySlips';
 import InventoryMovements from './pages/InventoryMovements';
 import { VoiceCampaigns } from './pages/VoiceCampaigns';
 import { Clients } from './pages/Clients';
+import { CustomerLifeCycle } from './pages/CustomerLifeCycle';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -146,6 +147,7 @@ function App() {
           <Route path="/operaciones/despacho" element={<DispatchHub />} />
           <Route path="/operaciones/productividad" element={<OperationsProductivity />} />
           <Route path="/clientes" element={<Clients />} />
+          <Route path="/clientes/hoja-de-vida/:id_servicio" element={<CustomerLifeCycle />} />
           <Route path="/operaciones/mis-tareas" element={<OperationsMyTasks />} />
           <Route path="/operaciones/supervision" element={<OperationsSupervision />} />
           <Route path="/operaciones/tecnicos" element={<TechnicianAnalytics />} />

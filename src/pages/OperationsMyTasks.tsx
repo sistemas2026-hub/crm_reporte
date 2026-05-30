@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, AlertCircle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity, Navigation, Zap } from 'lucide-react';
+import { CheckCircle2, Clock, ChevronRight, X, MessageSquare, AlertTriangle, AlertCircle, RefreshCw, Layers, Package, MapPin, Play, Camera, Trash2, Activity, Navigation, Zap, ExternalLink } from 'lucide-react';
 import { supabase, safeGetUser } from '../lib/supabase';
 import { WorkflowService, REQUIREMENTS } from '../lib/workflowService';
 import { WisphubService } from '../lib/wisphub';
@@ -661,13 +661,13 @@ export function OperationsMyTasks() {
             if (!answerOk) {
                 dispatchToast('Respuesta no publicada en WispHub', 'warning', 'Sin conexión con WispHub. El estado local avanzó correctamente.');
             } else {
-                supabase.from('ticket_actions').insert({
+                void supabase.from('ticket_actions').insert({
                     ticket_id: String(ticketId),
                     action_type: 'iniciar',
                     respuesta_enviada: ANSWER_INICIAR,
                     technician_id: currentUserIdRef.current,
                     created_at: new Date().toISOString(),
-                }).catch(() => {});
+                }).then(null, () => {});
             }
 
             // Siempre actualizar estado local — no bloquear en zonas de mala señal
@@ -784,13 +784,13 @@ export function OperationsMyTasks() {
             if (!answerOkProgreso) {
                 dispatchToast('Respuesta no publicada en WispHub', 'warning', 'Sin conexión con WispHub. El estado local avanzó correctamente.');
             } else {
-                supabase.from('ticket_actions').insert({
+                void supabase.from('ticket_actions').insert({
                     ticket_id: String(ticketId),
                     action_type: 'en_progreso',
                     respuesta_enviada: ANSWER_PROGRESO,
                     technician_id: currentUserIdRef.current,
                     created_at: new Date().toISOString(),
-                }).catch(() => {});
+                }).then(null, () => {});
             }
 
             // Audit log local — independiente de WispHub
@@ -1219,6 +1219,18 @@ export function OperationsMyTasks() {
                                                 <span className="font-bold text-zinc-800 uppercase truncate">
                                                     {proc?.metadata?.nombre_cliente || 'Desconocido'}
                                                 </span>
+                                                {(() => {
+                                                    const svcId = String(proc?.metadata?.id_servicio || (typeof proc?.metadata?.servicio !== 'object' ? proc?.metadata?.servicio : '') || '');
+                                                    return svcId ? (
+                                                        <button
+                                                            onClick={e => { e.stopPropagation(); window.open(`/clientes/hoja-de-vida/${svcId}`, '_blank'); }}
+                                                            className="text-blue-500 hover:text-blue-700 transition-colors shrink-0"
+                                                            title="Ver Hoja de Vida"
+                                                        >
+                                                            <ExternalLink size={11} />
+                                                        </button>
+                                                    ) : null;
+                                                })()}
                                             </p>
 
                                             {/* PANEL DE DETALLE EXPANDIDO */}

@@ -3,7 +3,7 @@ import {
     Search, Calendar, RefreshCcw,
     ChevronLeft, ChevronRight, Users, Filter,
     CheckSquare, Square, AlertCircle, Loader2, X,
-    ArrowRight, Zap, ClipboardList, History, Clock, CheckCircle2, Activity
+    ArrowRight, Zap, ClipboardList, History, Clock, CheckCircle2, Activity, Eye
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { WorkflowService } from '../lib/workflowService';
@@ -11,6 +11,48 @@ import { WisphubService } from '../lib/wisphub';
 import { OperationsHeader } from '../components/operations/OperationsHeader';
 import { orgService } from '../lib/orgService';
 import clsx from 'clsx';
+
+// ─── Column search helpers ────────────────────────────────────────────────────
+
+function ColSearch({ value, onChange, placeholder }: {
+    value: string; onChange: (v: string) => void; placeholder: string;
+}) {
+    return (
+        <div className="relative">
+            <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-300 pointer-events-none" />
+            <input
+                type="text"
+                value={value}
+                onChange={e => onChange(e.target.value)}
+                placeholder={placeholder}
+                className="w-full pl-6 pr-2 py-1 text-[10px] border border-zinc-200 rounded-lg outline-none focus:border-zinc-400 bg-white font-medium placeholder:text-zinc-300 transition-colors"
+            />
+            {value && (
+                <button
+                    onClick={() => onChange('')}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-300 hover:text-zinc-600"
+                >
+                    <X size={10} />
+                </button>
+            )}
+        </div>
+    );
+}
+
+function Highlight({ text, query }: { text: string; query: string }) {
+    const q = query.trim().toLowerCase();
+    if (!q || !text) return <>{text}</>;
+    const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const idx = norm(text).indexOf(norm(q));
+    if (idx === -1) return <>{text}</>;
+    return (
+        <>
+            {text.slice(0, idx)}
+            <mark className="bg-yellow-200 text-zinc-900 rounded px-0.5 not-italic">{text.slice(idx, idx + q.length)}</mark>
+            {text.slice(idx + q.length)}
+        </>
+    );
+}
 
 // ─── SLA helpers ──────────────────────────────────────────────────────────────
 
@@ -92,6 +134,15 @@ export function OperationsSupervision() {
     const [bulkTech, setBulkTech] = useState('');
     const [bulkReassigning, setBulkReassigning] = useState(false);
     const [bulkResult, setBulkResult] = useState<string | null>(null);
+
+    // ── Filtros por columna (client-side)
+    const [colFilters, setColFilters] = useState({ cliente: '', creacion: '', asunto: '', barrio: '', responsable: '', estado: '', escaladoA: '' });
+    const setCol = (k: keyof typeof colFilters, v: string) => setColFilters(prev => ({ ...prev, [k]: v }));
+
+    // ── Detalle de ticket
+    const [detailProcess, setDetailProcess] = useState<any | null>(null);
+    const [detailWisphubHistory, setDetailWisphubHistory] = useState<any[]>([]);
+    const [detailWisphubLoading, setDetailWisphubLoading] = useState(false);
 
     // ── Transferencia a Campo
     const [transferTarget, setTransferTarget] = useState<any | null>(null);
@@ -489,16 +540,62 @@ export function OperationsSupervision() {
             );
 
         // Filtro por técnico en barra de búsqueda (5 campos)
-        if (!filterTech.trim()) return byLocation;
-        const q = normalizeText(filterTech);
-        return byLocation.filter(p =>
-            normalizeText(p.__techDisplayName).includes(q) ||
-            normalizeText(p.metadata?.email_tecnico  || '').includes(q) ||
-            normalizeText(p.metadata?.nombre_tecnico || '').includes(q) ||
-            normalizeText(p.__assignedUser?.email    || '').includes(q) ||
-            normalizeText(String(p.__assignedUser?.wisphub_id || '')).includes(q)
-        );
-    }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterLocation, filterTech]);
+        let byTech = byLocation;
+        if (filterTech.trim()) {
+            const q = normalizeText(filterTech);
+            byTech = byLocation.filter(p =>
+                normalizeText(p.__techDisplayName).includes(q) ||
+                normalizeText(p.metadata?.email_tecnico  || '').includes(q) ||
+                normalizeText(p.metadata?.nombre_tecnico || '').includes(q) ||
+                normalizeText(p.__assignedUser?.email    || '').includes(q) ||
+                normalizeText(String(p.__assignedUser?.wisphub_id || '')).includes(q)
+            );
+        }
+
+        // Filtros por columna individuales
+        const cfs = colFilters;
+        if (!Object.values(cfs).some(v => v.trim())) return byTech;
+        return byTech.filter(p => {
+            if (cfs.cliente.trim()) {
+                const q = normalizeText(cfs.cliente);
+                const match =
+                    normalizeText(p.metadata?.nombre_cliente || '').includes(q) ||
+                    normalizeText(String(p.reference_id || '')).includes(q) ||
+                    normalizeText(p.title || '').includes(q);
+                if (!match) return false;
+            }
+            if (cfs.creacion.trim()) {
+                const d = new Date(p.created_at);
+                const formatted = d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                const iso = p.created_at.slice(0, 10);
+                if (!formatted.includes(cfs.creacion) && !iso.includes(cfs.creacion)) return false;
+            }
+            if (cfs.asunto.trim()) {
+                const tipo = p.title || p.metadata?.asunto || p.process_type || '';
+                if (!normalizeText(tipo).includes(normalizeText(cfs.asunto))) return false;
+            }
+            if (cfs.barrio.trim()) {
+                const zona = `${p.metadata?.barrio || ''} ${p.metadata?.zona || ''}`;
+                if (!normalizeText(zona).includes(normalizeText(cfs.barrio))) return false;
+            }
+            if (cfs.responsable.trim()) {
+                if (!normalizeText(p.__techDisplayName || '').includes(normalizeText(cfs.responsable))) return false;
+            }
+            if (cfs.estado.trim()) {
+                const isFinished = p.status === 'Completed' || p.status === 'Cerrado'
+                    || p.metadata?.id_estado === 3 || p.metadata?.id_estado === 4
+                    || p.metadata?.estado === 'Resuelto' || p.metadata?.estado === 'Cerrado';
+                const isStarted = !!p.metadata?.started_at || p.metadata?.id_estado === 2 || p.metadata?.estado === 'En Progreso';
+                const label = isFinished ? 'completado' : isStarted ? 'en progreso' : 'abierto';
+                if (!label.includes(normalizeText(cfs.estado))) return false;
+            }
+            if (cfs.escaladoA.trim()) {
+                const escalLabel = p.metadata?.escalated_to || ((p.escalation_level ?? 0) >= 2 ? `Nivel ${p.escalation_level}` : '');
+                if (!normalizeText(escalLabel).includes(normalizeText(cfs.escaladoA))) return false;
+            }
+            return true;
+        });
+    }, [processes, platformUsers, userByKey, platformUsersReady, activeTab, filterLocation, filterTech, colFilters]);
 
     // ── Conteos por pestaña de estado
     const tabCounts = useMemo(() => {
@@ -809,22 +906,35 @@ export function OperationsSupervision() {
                         <thead className="bg-zinc-50 border-b border-zinc-200">
                             <tr>
                                 {activeTab !== 'finalizados' && (
-                                    <th className="p-3 w-10">
+                                    <th className="px-3 pt-3 pb-1 w-10">
                                         <button onClick={toggleAll} className="text-zinc-400 hover:text-indigo-600 transition-colors">
                                             {allSelected ? <CheckSquare size={15} className="text-indigo-600" /> : <Square size={15} />}
                                         </button>
                                     </th>
                                 )}
-                                <th className="p-4 text-left text-[10px] uppercase font-bold tracking-widest text-zinc-400">ID / Cliente</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Creación</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Asunto</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Barrio</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Nivel</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Responsable</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Estado</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Escalado A</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">SLA</th>
-                                <th className="p-4 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Historial</th>
+                                <th className="px-4 pt-3 pb-1 text-left text-[10px] uppercase font-bold tracking-widest text-zinc-400">ID / Cliente</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Creación</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Asunto</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Barrio</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Nivel</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Responsable</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Estado</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Escalado A</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">SLA</th>
+                                <th className="px-4 pt-3 pb-1 text-center text-[10px] uppercase font-bold tracking-widest text-zinc-400">Historial</th>
+                            </tr>
+                            <tr>
+                                {activeTab !== 'finalizados' && <td className="px-2 pb-2" />}
+                                <td className="px-2 pb-2 min-w-[120px]"><ColSearch value={colFilters.cliente} onChange={v => setCol('cliente', v)} placeholder="ID / cliente..." /></td>
+                                <td className="px-2 pb-2 min-w-[90px]"><ColSearch value={colFilters.creacion} onChange={v => setCol('creacion', v)} placeholder="DD/MM/AAAA..." /></td>
+                                <td className="px-2 pb-2 min-w-[110px]"><ColSearch value={colFilters.asunto} onChange={v => setCol('asunto', v)} placeholder="Asunto..." /></td>
+                                <td className="px-2 pb-2 min-w-[90px]"><ColSearch value={colFilters.barrio} onChange={v => setCol('barrio', v)} placeholder="Barrio..." /></td>
+                                <td className="px-2 pb-2" />
+                                <td className="px-2 pb-2 min-w-[110px]"><ColSearch value={colFilters.responsable} onChange={v => setCol('responsable', v)} placeholder="Técnico..." /></td>
+                                <td className="px-2 pb-2 min-w-[90px]"><ColSearch value={colFilters.estado} onChange={v => setCol('estado', v)} placeholder="Estado..." /></td>
+                                <td className="px-2 pb-2 min-w-[90px]"><ColSearch value={colFilters.escaladoA} onChange={v => setCol('escaladoA', v)} placeholder="Escalado a..." /></td>
+                                <td className="px-2 pb-2" />
+                                <td className="px-2 pb-2" />
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-zinc-100">
@@ -858,8 +968,8 @@ export function OperationsSupervision() {
                                         p.metadata?.tecnico?.nombre ||
                                         'POR ASIGNAR';
 
-                                    // SLA dinámico
-                                    const ticketType = p.title?.split(' - ')[0] || p.metadata?.asunto || p.process_type || '';
+                                    // SLA dinámico — getSlaInfo hace el split internamente
+                                    const ticketType = p.title || p.metadata?.asunto || p.process_type || '';
                                     const sla = getSlaInfo(p.created_at, ticketType, slaMap);
                                     const isSelected = selectedIds.has(p.id);
 
@@ -889,10 +999,10 @@ export function OperationsSupervision() {
                                             <td className="p-4">
                                                 <div className="flex flex-col">
                                                     <span className="text-xs font-bold uppercase text-zinc-900 leading-tight">
-                                                        {p.metadata?.nombre_cliente || (p.title.includes(' - ') ? p.title.split(' - ')[1] : p.title)}
+                                                        <Highlight text={p.metadata?.nombre_cliente || (p.title.includes(' - ') ? p.title.split(' - ')[1] : p.title)} query={colFilters.cliente} />
                                                     </span>
                                                     <span className="text-[10px] font-bold text-zinc-500 font-mono bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200 w-fit mt-1">
-                                                        #{p.reference_id || p.id.split('-')[0]}
+                                                        #<Highlight text={String(p.reference_id || p.id.split('-')[0])} query={colFilters.cliente} />
                                                     </span>
                                                 </div>
                                             </td>
@@ -912,14 +1022,14 @@ export function OperationsSupervision() {
                                             {/* Asunto */}
                                             <td className="p-4 text-center">
                                                 <div className="max-w-[140px] mx-auto text-[9px] font-bold uppercase text-zinc-600 bg-zinc-50 px-2 py-1.5 rounded-lg border border-zinc-200 truncate" title={ticketType}>
-                                                    {ticketType || p.process_type}
+                                                    <Highlight text={ticketType || p.process_type} query={colFilters.asunto} />
                                                 </div>
                                             </td>
 
                                             {/* Barrio */}
                                             <td className="p-4 text-center">
                                                 <span className="text-[10px] font-medium text-zinc-500 truncate max-w-[100px] block">
-                                                    {p.metadata?.barrio || p.metadata?.zona || '—'}
+                                                    <Highlight text={p.metadata?.barrio || p.metadata?.zona || '—'} query={colFilters.barrio} />
                                                 </span>
                                             </td>
 
@@ -944,7 +1054,7 @@ export function OperationsSupervision() {
                                                         ? 'text-amber-700 bg-amber-50 border-amber-200'
                                                         : 'text-zinc-600 bg-zinc-50 border-zinc-200'
                                                 )}>
-                                                    {responsibleName}
+                                                    <Highlight text={responsibleName} query={colFilters.responsable} />
                                                 </span>
                                             </td>
 
@@ -982,7 +1092,7 @@ export function OperationsSupervision() {
                                                         || ((p.escalation_level ?? 0) >= 2 ? `Nivel ${p.escalation_level}` : null);
                                                     return label ? (
                                                         <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-1 rounded-lg truncate max-w-[110px] block mx-auto">
-                                                            {label}
+                                                            <Highlight text={label} query={colFilters.escaladoA} />
                                                         </span>
                                                     ) : (
                                                         <span className="text-zinc-300 text-[10px]">—</span>
@@ -1024,6 +1134,12 @@ export function OperationsSupervision() {
                                             {/* Historial + Acciones */}
                                             <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
                                                 <div className="flex flex-col gap-1 items-center">
+                                                    <button
+                                                        onClick={() => { setDetailProcess(p); setDetailWisphubHistory([]); }}
+                                                        className="flex items-center gap-1 text-[9px] font-black uppercase px-2.5 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 transition-all w-full justify-center"
+                                                    >
+                                                        <Eye size={10} /> Detalle
+                                                    </button>
                                                     <button
                                                         onClick={async () => {
                                                             setHistoryProcess(p);
@@ -1447,6 +1563,185 @@ export function OperationsSupervision() {
                     </div>
                 </div>
             )}
+
+            {/* ── Modal: Detalle del Ticket ── */}
+            {detailProcess && (() => {
+                const dp = detailProcess;
+                const ticketType = dp.title || dp.metadata?.asunto || dp.process_type || '';
+                const sla = getSlaInfo(dp.created_at, ticketType, slaMap);
+                const isEscalated = (dp.escalation_level || 0) >= 2;
+
+                const Field = ({ label, value }: { label: string; value?: string | null }) =>
+                    value ? (
+                        <div className="flex flex-col gap-0.5">
+                            <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">{label}</span>
+                            <span className="text-xs font-bold text-zinc-800 break-words">{value}</span>
+                        </div>
+                    ) : null;
+
+                return (
+                    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                        <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+
+                            {/* Header */}
+                            <div className="bg-blue-50 border-b border-blue-100 px-6 py-4 flex items-center justify-between shrink-0">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center">
+                                        <Eye size={16} className="text-blue-600" />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-sm font-black uppercase tracking-wide text-zinc-900">Detalle del Ticket</h2>
+                                        <p className="text-[10px] text-zinc-500 font-mono">
+                                            #{dp.reference_id || dp.id.split('-')[0]}
+                                            {' · '}{dp.metadata?.nombre_cliente || dp.title}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setDetailProcess(null)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+                                    <X size={18} />
+                                </button>
+                            </div>
+
+                            {/* Body */}
+                            <div className="overflow-y-auto flex-1 p-6 space-y-5">
+
+                                {/* Ficha principal */}
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-4 bg-zinc-50 border border-zinc-100 rounded-2xl p-4">
+                                    <Field label="Cliente" value={dp.metadata?.nombre_cliente} />
+                                    <Field label="Barrio / Zona" value={[dp.metadata?.barrio, dp.metadata?.zona].filter(Boolean).join(' · ')} />
+                                    <Field label="Dirección" value={dp.metadata?.direccion || dp.metadata?.address} />
+                                    <Field label="Teléfono" value={dp.metadata?.telefono || dp.metadata?.celular || dp.metadata?.phone} />
+                                    <Field label="Asunto" value={ticketType} />
+                                    <Field label="Técnico Asignado" value={dp.metadata?.nombre_tecnico || dp.metadata?.email_tecnico} />
+                                    <Field label="Estado WispHub" value={dp.metadata?.estado || dp.metadata?.nombre_estado} />
+                                    <Field label="Creación" value={new Date(dp.created_at).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })} />
+                                    {dp.metadata?.descripcion && (
+                                        <div className="col-span-2 flex flex-col gap-0.5">
+                                            <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Descripción</span>
+                                            <p className="text-xs font-medium text-zinc-700 leading-relaxed whitespace-pre-wrap">{dp.metadata.descripcion}</p>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* SLA */}
+                                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">SLA</span>
+                                        <span className={clsx(
+                                            'text-[10px] font-black font-mono',
+                                            sla.status === 'critical' && 'text-red-600',
+                                            sla.status === 'warning' && 'text-amber-600',
+                                            sla.status === 'ok' && 'text-zinc-500',
+                                        )}>
+                                            {sla.hoursOpen}h / {sla.maxHours}h · {sla.pct}%
+                                        </span>
+                                    </div>
+                                    <div className="w-full h-2.5 bg-zinc-200 rounded-full overflow-hidden">
+                                        <div
+                                            className={clsx(
+                                                'h-full rounded-full transition-all',
+                                                sla.status === 'critical' && 'bg-red-500 animate-pulse',
+                                                sla.status === 'warning' && 'bg-amber-400',
+                                                sla.status === 'ok' && 'bg-emerald-400',
+                                            )}
+                                            style={{ width: `${Math.min(sla.pct, 100)}%` }}
+                                        />
+                                    </div>
+                                    {sla.status === 'critical' && (
+                                        <p className="text-[10px] font-black text-red-600 uppercase tracking-widest animate-pulse">SLA VENCIDO</p>
+                                    )}
+                                    {sla.status === 'warning' && (
+                                        <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Cerca del límite</p>
+                                    )}
+                                </div>
+
+                                {/* Escalamiento */}
+                                {isEscalated && (
+                                    <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 space-y-1">
+                                        <span className="text-[9px] font-black text-orange-400 uppercase tracking-widest">Escalamiento</span>
+                                        <div className="grid grid-cols-3 gap-4 mt-2">
+                                            <Field label="Nivel" value={`N${dp.escalation_level}`} />
+                                            <Field label="Escalado A" value={dp.metadata?.escalated_to} />
+                                            <Field label="Fecha Escalado" value={dp.metadata?.escalated_at ? new Date(dp.metadata.escalated_at).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : undefined} />
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Respuestas WispHub */}
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Respuestas WispHub</span>
+                                        {!detailWisphubLoading && detailWisphubHistory.length === 0 && (
+                                            <button
+                                                onClick={async () => {
+                                                    const ticketId = dp.reference_id;
+                                                    if (!ticketId) return;
+                                                    setDetailWisphubLoading(true);
+                                                    try {
+                                                        const raw = await WisphubService.getTicketRaw(String(ticketId)).catch(() => null);
+                                                        setDetailWisphubHistory(raw?.respuestas || []);
+                                                    } finally {
+                                                        setDetailWisphubLoading(false);
+                                                    }
+                                                }}
+                                                className="text-[10px] font-bold text-blue-600 hover:text-blue-800 underline"
+                                            >
+                                                Cargar historial
+                                            </button>
+                                        )}
+                                    </div>
+                                    {detailWisphubLoading && (
+                                        <div className="flex items-center gap-2 py-3 text-[11px] text-zinc-400">
+                                            <Loader2 size={12} className="animate-spin" /> Cargando respuestas...
+                                        </div>
+                                    )}
+                                    {!detailWisphubLoading && detailWisphubHistory.length > 0 && (
+                                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                                            {detailWisphubHistory.map((r: any, i: number) => (
+                                                <div key={i} className="bg-zinc-50 border border-zinc-100 rounded-xl px-3 py-2 text-[11px]">
+                                                    <div className="flex items-center justify-between gap-2 mb-1">
+                                                        <span className="font-bold text-zinc-700 truncate">{r.usuario || r.user || 'Sistema'}</span>
+                                                        <span className="text-zinc-400 font-mono shrink-0 text-[10px]">
+                                                            {r.created ? new Date(r.created).toLocaleString('es-CO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-zinc-600 whitespace-pre-wrap break-words">{r.respuesta || r.comentario || ''}</p>
+                                                    {r.archivo && (
+                                                        <a href={r.archivo} target="_blank" rel="noreferrer" className="mt-1.5 block">
+                                                            <img src={r.archivo} alt="foto" className="rounded-lg max-h-40 object-cover border border-zinc-200 cursor-pointer hover:opacity-90" />
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {!detailWisphubLoading && detailWisphubHistory.length === 0 && (
+                                        <p className="text-[11px] text-zinc-300 font-medium">Sin respuestas cargadas.</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Footer */}
+                            <div className="border-t border-zinc-100 px-6 py-4 shrink-0 flex items-center justify-between gap-3">
+                                {dp.metadata?.id_servicio && (
+                                    <button
+                                        onClick={() => window.open(`/clientes/hoja-de-vida/${dp.metadata.id_servicio}`, '_blank')}
+                                        className="flex items-center gap-1.5 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl font-bold text-xs uppercase hover:bg-blue-100 transition-all"
+                                    >
+                                        <Eye size={12} /> Hoja de Vida
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => setDetailProcess(null)}
+                                    className="ml-auto px-5 py-2 bg-zinc-100 text-zinc-600 rounded-xl font-bold text-xs uppercase hover:bg-zinc-200 transition-all"
+                                >
+                                    Cerrar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* ── Modal: Historial de Actividad ── */}
             {historyProcess && (

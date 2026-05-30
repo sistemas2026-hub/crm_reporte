@@ -71,7 +71,7 @@ export function getRecordingLinkUrl(context?: { ticketId?: string | number; page
     const linkId = import.meta.env.VITE_JAM_RECORDING_LINK_ID;
     if (!linkId) return 'https://jam.dev';
 
-    const page = context?.page ?? window.location.pathname.replace('/operaciones/', '').replace('/', '') || 'inicio';
+    const page = (context?.page ?? window.location.pathname.replace('/operaciones/', '').replace('/', '')) || 'inicio';
     const title = `Bug en ${page}${context?.ticketId ? ` — Ticket #${context.ticketId}` : ''}`;
     const params = new URLSearchParams({
         'jam-title': title,
