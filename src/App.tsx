@@ -36,6 +36,11 @@ import InventoryMovements from './pages/InventoryMovements';
 import { VoiceCampaigns } from './pages/VoiceCampaigns';
 import { Clients } from './pages/Clients';
 import { CustomerLifeCycle } from './pages/CustomerLifeCycle';
+import { MaintenanceHub } from './pages/MaintenanceHub';
+import { MaintenanceOrder } from './pages/MaintenanceOrder';
+import { MaintenanceOrderPrint } from './pages/MaintenanceOrderPrint';
+import { MaintenanceFleetHistory } from './pages/MaintenanceFleetHistory';
+import { MaintenanceCatalogAdmin } from './pages/MaintenanceCatalogAdmin';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -91,20 +96,13 @@ function App() {
           }
         }
       } else if (event === 'SIGNED_OUT') {
-        // Detectar si el logout es intencional o por sesión corrupta
-        const token = localStorage.getItem('sb-rapilink-auth-token');
-        if (!token) {
-          // Token fue eliminado (sesión corrupta limpiada automáticamente o logout intencional)
-          console.warn('[App:Auth] 🚪 Sesión cerrada. Redirigiendo al login.');
-          setSession(null);
-          setOrgReady(null);
-        } else {
-          // Token aún existe pero Supabase lo rechazó - probable sesión corrupta
-          console.warn('[App:Auth] ⚠️ Sesión rechazada aunque token existe. Puede estar corrupta. Limpiando...');
-          clearCorruptedSession();
-          setSession(null);
-          setOrgReady(null);
-        }
+        // supabase-js ya limpió la sesión de localStorage antes de emitir
+        // este evento; aquí solo se refleja en la UI. (La comprobación
+        // anterior leía 'sb-rapilink-auth-token', una clave legacy que ya
+        // no se usa, así que nunca encontraba nada.)
+        console.warn('[App:Auth] 🚪 Sesión cerrada. Redirigiendo al login.');
+        setSession(null);
+        setOrgReady(null);
       }
     });
 
@@ -127,6 +125,9 @@ function App() {
           orgReady ? <Navigate to="/" /> :
           <Onboarding />
         } />
+
+        {/* Vista imprimible: sin sidebar/topbar, solo requiere sesión */}
+        <Route path="/mantenimiento/:id/imprimir" element={!session ? <Navigate to="/login" /> : <MaintenanceOrderPrint />} />
 
         <Route element={
           !session ? <Navigate to="/login" /> :
@@ -164,6 +165,10 @@ function App() {
           <Route path="/operaciones/inventario/analiticas" element={<InventoryAnalytics />} />
           <Route path="/operaciones/inventario/actas" element={<InventorySlips />} />
           <Route path="/operaciones/inventario/movimientos" element={<InventoryMovements />} />
+          <Route path="/mantenimiento" element={<MaintenanceHub />} />
+          <Route path="/mantenimiento/historial" element={<MaintenanceFleetHistory />} />
+          <Route path="/mantenimiento/catalogo" element={<MaintenanceCatalogAdmin />} />
+          <Route path="/mantenimiento/:id" element={<MaintenanceOrder />} />
           <Route path="/voice-ai" element={<VoiceCampaigns />} />
           <Route path="/pipeline" element={<Pipeline />} />
           <Route path="/historial" element={<InteractionHistory />} />

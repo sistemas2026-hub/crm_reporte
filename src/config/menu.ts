@@ -19,7 +19,8 @@ import {
     Clock,
     Activity,
     Radio,
-    Users
+    Users,
+    Wrench
 } from 'lucide-react';
 
 export interface MenuItem {
@@ -89,6 +90,15 @@ export const NAV_GROUPS: NavGroup[] = [
             { id: 'inventory-analytics-consumption', to: '/operaciones/inventario/analiticas', icon: BarChart3, label: 'Analíticas de Consumo' },
         ]
 
+    },
+    {
+        title: 'Mantenimiento',
+        icon: Wrench,
+        items: [
+            { id: 'mtto-hub', to: '/mantenimiento', icon: Wrench, label: 'Mantenimiento Vehicular' },
+            { id: 'mtto-historial', to: '/mantenimiento/historial', icon: History, label: 'Historial por Vehículo' },
+            { id: 'mtto-catalogo', to: '/mantenimiento/catalogo', icon: Package, label: 'Catálogo de Precios (Mtto)' },
+        ]
     },
     {
         title: 'Reportes',

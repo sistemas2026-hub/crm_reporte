@@ -8,60 +8,48 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Supabase URL and Anon Key are required in .env');
 }
 
-// 🛡️ STORAGE ANTI-500 V2: Detecta sesiones corruptas y las limpia automáticamente
-let refreshFailCount = 0;
-const MAX_REFRESH_FAILS = 3;
-
+/**
+ * Limpia manualmente los restos de sesión del navegador.
+ * Se usa desde App.tsx cuando se detecta una sesión inservible.
+ */
 export function clearCorruptedSession() {
+  const host = new URL(supabaseUrl).hostname.split('.')[0];
   const KEYS = [
-    `sb-${supabaseUrl.split('.')[0].split('//')[1]}-auth-token`,
-    `sb-${supabaseUrl.split('.')[0].split('//')[1]}-auth-token-code-verifier`,
+    `sb-${host}-auth-token`,
+    `sb-${host}-auth-token-code-verifier`,
+    'sb-rapilink-auth-token', // clave legacy, por si quedó de versiones anteriores
   ];
-  console.warn('[Supabase:Storage] 🗑️ Limpiando sesión corrupta del navegador...');
+  console.warn('[Supabase:Storage] 🗑️ Limpiando sesión del navegador...');
   KEYS.forEach(k => window.localStorage.removeItem(k));
-  // También limpiar clave legacy por si existe
-  window.localStorage.removeItem('sb-rapilink-auth-token');
-  refreshFailCount = 0;
 }
 
-const safeStorage = {
-  getItem: (key: string) => {
-    return window.localStorage.getItem(key);
-  },
-  setItem: (key: string, value: string) => {
-    window.localStorage.setItem(key, value);
-  },
-  removeItem: (key: string) => {
-    // Si Supabase intenta borrar el token por error de refresh, contar los intentos
-    if (key.includes('-auth-token') && key.startsWith('sb-') && !(window as any).__isIntentionalLogout) {
-      refreshFailCount++;
-
-      // Después de N fallos consecutivos, la sesión está corrupta - permitir limpieza
-      if (refreshFailCount >= MAX_REFRESH_FAILS) {
-        console.warn(`[Supabase:Storage] 🗑️ ${MAX_REFRESH_FAILS} fallos de refresh consecutivos. Sesión corrupta confirmada, limpiando...`);
-        window.localStorage.removeItem(key);
-        refreshFailCount = 0;
-        return;
-      }
-
-      console.warn(`[Supabase:Storage] 🛡️ Ignorando intento de borrar '${key}' (fallo ${refreshFailCount}/${MAX_REFRESH_FAILS}). Esperando confirmación...`);
-      return;
-    }
-
-    // Logout intencional o limpieza automática después de fallos - permitir
-    refreshFailCount = 0;
-    window.localStorage.removeItem(key);
-  }
-};
-
+/**
+ * ⚠️ NO volver a introducir un "storage" que bloquee removeItem.
+ *
+ * Hubo aquí un parche (STORAGE ANTI-500) que ignoraba los primeros
+ * intentos de supabase-js de borrar el token, con la idea de proteger
+ * la sesión ante fallos transitorios de refresh. En la práctica causaba
+ * una RECURSIÓN INFINITA cuando el endpoint de refresh devolvía 500:
+ *
+ *   _callRefreshToken → _removeSession → _notifyAllSubscribers
+ *     → (realtime) setAuth → getSession → __loadSession
+ *     → _callRefreshToken → ...
+ *
+ * Al no dejar que se borrara el token muerto, cada notificación de
+ * SIGNED_OUT hacía que el cliente volviera a encontrarlo en localStorage
+ * y reintentara refrescarlo, colgando la pestaña con cientos de
+ * peticiones. Dejando que supabase-js limpie la sesión, el ciclo se
+ * corta solo: el usuario cae al login una vez y ya.
+ */
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
-    autoRefreshToken: true, // ✅ Restaurado - fallos manejados por contador de reintentos
+    autoRefreshToken: true,
     detectSessionInUrl: true,
-    storage: safeStorage,
-    // ⚠️ storageKey eliminado: usar la clave automática de Supabase (sb-{projectId}-auth-token)
-    // El override 'sb-rapilink-auth-token' causaba conflicto con la sesión real → error 400 y Multiple GoTrueClient
+    // Sin 'storage' personalizado: se usa localStorage tal cual.
+    // Sin 'storageKey': se usa la clave automática (sb-{host}-auth-token).
+    // El override 'sb-rapilink-auth-token' causaba conflicto con la sesión
+    // real → error 400 y advertencia de Multiple GoTrueClient.
   }
 });
 

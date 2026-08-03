@@ -53,3 +53,6 @@ temp_client.json
 !supabase_add_menu_permissions.sql
 !supabase_migration_workflow.sql
 !supabase_notifications_setup.sql
+# Las migraciones SÍ deben versionarse: la regla *.sql de arriba está pensada
+# para los scripts SQL temporales de depuración de la raíz, no para éstas.
+!supabase/migrations/*.sql
