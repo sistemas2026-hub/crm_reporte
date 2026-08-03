@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-    User, Phone, MapPin, Wifi, CreditCard, AlertTriangle,
-    ChevronDown, ChevronUp, ExternalLink, ArrowLeft,
-    Loader2, Activity, CheckCircle2, Clock, RefreshCcw,
-    DollarSign, FileText, Zap
+    User, Phone, MapPin, Wifi, AlertTriangle,
+    ChevronDown, ChevronUp, ArrowLeft,
+    Loader2, Activity, Clock, RefreshCcw,
+    DollarSign, FileText
 } from 'lucide-react';
 import { WisphubService } from '../lib/wisphub';
 import { WisphubCache } from '../lib/wisphubCache';

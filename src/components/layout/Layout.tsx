@@ -23,7 +23,6 @@ import { NAV_GROUPS } from '../../config/menu';
 import { WisphubService, type WispHubClient } from '../../lib/wisphub';
 import { WisphubCache } from '../../lib/wisphubCache';
 import { NotificationService, type Notification } from '../../lib/notifications';
-import { WorkflowService } from '../../lib/workflowService';
 import clsx from 'clsx';
 import { useState, useEffect, useRef } from 'react';
 import { MobileSidebar } from './MobileSidebar';

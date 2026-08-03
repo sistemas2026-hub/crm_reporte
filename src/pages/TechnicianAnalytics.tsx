@@ -14,7 +14,6 @@ import {
     ChevronUp,
     Repeat2
 } from 'lucide-react';
-import { WorkflowService } from '../lib/workflowService';
 import { WisphubCache } from '../lib/wisphubCache';
 import { supabase } from '../lib/supabase';
 import * as XLSX from 'xlsx';
@@ -90,7 +89,9 @@ function KpiCard({ icon: Icon, label, value, sub, color = 'text-blue-900', bg = 
 // ─── Main Component ─────────────────────────────────────────────────────────
 export function TechnicianAnalytics() {
     const [loading, setLoading] = useState(true);
-    const [loadProgress, setLoadProgress] = useState({ current: 0, total: 0 });
+    // NOTA: no hay setter — este contador nunca se actualiza, así que el
+    // indicador de progreso siempre muestra 0/0. Pendiente de revisar.
+    const [loadProgress] = useState({ current: 0, total: 0 });
     const [techStats, setTechStats] = useState<TechStat[]>([]);
     const [selectedTech, setSelectedTech] = useState<TechStat | null>(null);
     const [typeFilter, setTypeFilter] = useState<'all' | 'field' | 'office'>('all');
