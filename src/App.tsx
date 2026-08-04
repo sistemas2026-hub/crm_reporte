@@ -42,6 +42,9 @@ import { MaintenanceOrderPrint } from './pages/MaintenanceOrderPrint';
 import { MaintenanceFleetHistory } from './pages/MaintenanceFleetHistory';
 import { MaintenanceCatalogAdmin } from './pages/MaintenanceCatalogAdmin';
 import { MaintenanceFleetAdmin } from './pages/MaintenanceFleetAdmin';
+import { MaintenanceSignersAdmin } from './pages/MaintenanceSignersAdmin';
+import { MaintenanceSignByLink } from './pages/MaintenanceSignByLink';
+import { MaintenanceDiagnoseByLink } from './pages/MaintenanceDiagnoseByLink';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -127,6 +130,12 @@ function App() {
           <Onboarding />
         } />
 
+        {/* Firma por enlace: PÚBLICA, sin sesión. La seguridad la da el
+            token (aleatorio, hasheado, un solo uso, con caducidad) más el
+            PIN, ambos validados en el servidor. */}
+        <Route path="/firmar/:token" element={<MaintenanceSignByLink />} />
+        <Route path="/diagnosticar/:token" element={<MaintenanceDiagnoseByLink />} />
+
         {/* Vista imprimible: sin sidebar/topbar, solo requiere sesión */}
         <Route path="/mantenimiento/:id/imprimir" element={!session ? <Navigate to="/login" /> : <MaintenanceOrderPrint />} />
 
@@ -170,6 +179,7 @@ function App() {
           <Route path="/mantenimiento/historial" element={<MaintenanceFleetHistory />} />
           <Route path="/mantenimiento/catalogo" element={<MaintenanceCatalogAdmin />} />
           <Route path="/mantenimiento/vehiculos" element={<MaintenanceFleetAdmin />} />
+          <Route path="/mantenimiento/personal" element={<MaintenanceSignersAdmin />} />
           <Route path="/mantenimiento/:id" element={<MaintenanceOrder />} />
           <Route path="/voice-ai" element={<VoiceCampaigns />} />
           <Route path="/pipeline" element={<Pipeline />} />

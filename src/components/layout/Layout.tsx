@@ -413,6 +413,10 @@ export function Layout() {
     const navGroups = NAV_GROUPS.map(group => ({
         ...group,
         items: group.items.filter(item => {
+            // Ítems marcados adminOnly: se ocultan aunque estén en allowed_menus.
+            // (Ej: asignación de PIN de firma en Mantenimiento.)
+            if (item.adminOnly && !isAdmin) return false;
+
             // Si es admin total, ve todo lo que no sea adminOnly (que se filtra abajo)
             // o si el grupo/ítem está explícitamente permitido
             if (isAdmin) return true;

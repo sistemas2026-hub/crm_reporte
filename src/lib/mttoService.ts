@@ -30,7 +30,22 @@ export type MttoOrdenHallazgo = Tables['mtto_orden_hallazgo']['Row'];
 export type MttoOrdenFoto = Tables['mtto_orden_foto']['Row'];
 export type MttoOrdenReparacion = Tables['mtto_orden_reparacion']['Row'];
 export type MttoReparacionFoto = Tables['mtto_reparacion_foto']['Row'];
+export type MttoFirmante = Tables['mtto_firmante']['Row'];
+
+/**
+ * El SELECT de mtto_firmante.pin_hash está revocado en la base de datos, así
+ * que `select('*')` falla con "permission denied for column pin_hash". Hay
+ * que pedir columnas explícitas. Para saber si ya tiene PIN se usa la
+ * columna derivada tiene_pin. Ver 20260804_mtto_7_firmantes.sql.
+ */
+const MTTO_FIRMANTE_COLS =
+    'id, org_id, nombre, documento, cargo, rol, pin_intentos_fallidos, pin_bloqueado_hasta, pin_definido_por_admin, tiene_pin, activo, creado_por, created_at';
 export type MttoOrdenEvento = Tables['mtto_orden_evento']['Row'];
+/** Evento con el autor resuelto: usuario con cuenta o firmante sin cuenta. */
+export type MttoEventoConAutor = MttoOrdenEvento & {
+    usuario?: { full_name: string | null } | null;
+    firmante?: { nombre: string; documento: string | null } | null;
+};
 export type MttoOrdenTotal = Database['public']['Views']['mtto_v_orden_total']['Row'];
 export type MttoOrdenResumen = Database['public']['Views']['mtto_v_orden_resumen']['Row'];
 export type MttoCostoVehiculo = Database['public']['Views']['mtto_v_costo_vehiculo']['Row'];
@@ -492,10 +507,10 @@ export const MttoService = {
     // ================================================================
     // TRAZABILIDAD
     // ================================================================
-    async listEventos(ordenId: string): Promise<(MttoOrdenEvento & { usuario?: { full_name: string | null } })[]> {
+    async listEventos(ordenId: string): Promise<MttoEventoConAutor[]> {
         const { data, error } = await supabase
             .from('mtto_orden_evento')
-            .select('*, usuario:profiles(full_name)')
+            .select('*, usuario:profiles(full_name), firmante:mtto_firmante(nombre, documento)')
             .eq('orden_id', ordenId)
             .order('created_at');
         return ensure(data as any, error);
@@ -556,6 +571,184 @@ export const MttoService = {
 
     async revisarConPin(ordenId: string, usuarioId: string, pin: string, obs: string): Promise<void> {
         const { error } = await supabase.rpc('mtto_revisar_orden_pin', { p_orden_id: ordenId, p_usuario_id: usuarioId, p_pin: pin, p_obs: obs });
+        if (error) throw new Error(error.message);
+    },
+
+    // ================================================================
+    // FIRMANTES SIN CUENTA — personas registradas solo dentro del
+    // módulo (nombre, documento y PIN), que no pueden iniciar sesión
+    // pero sí revisar y aprobar. Ver 20260804_mtto_7_firmantes.sql.
+    // ================================================================
+
+    async listFirmantes(soloActivos = false): Promise<MttoFirmante[]> {
+        let query = supabase.from('mtto_firmante').select(MTTO_FIRMANTE_COLS).order('nombre');
+        if (soloActivos) query = query.eq('activo', true);
+        const { data, error } = await query;
+        return ensure(data as any, error);
+    },
+
+    async crearFirmante(payload: Tables['mtto_firmante']['Insert']): Promise<MttoFirmante> {
+        const { data, error } = await supabase.from('mtto_firmante').insert(payload).select(MTTO_FIRMANTE_COLS).single();
+        return ensure(data as any, error);
+    },
+
+    async actualizarFirmante(id: string, payload: Tables['mtto_firmante']['Update']): Promise<MttoFirmante> {
+        const { data, error } = await supabase.from('mtto_firmante').update(payload).eq('id', id).select(MTTO_FIRMANTE_COLS).single();
+        return ensure(data as any, error);
+    },
+
+    /** El admin asigna el PIN inicial (o lo restablece si se olvidó). */
+    async asignarPinFirmante(firmanteId: string, pin: string): Promise<void> {
+        const { error } = await supabase.rpc('mtto_asignar_pin_firmante', { p_firmante_id: firmanteId, p_pin: pin });
+        if (error) throw new Error(error.message);
+    },
+
+    /** La persona cambia SU PIN presentando el actual; desde ahí solo ella lo conoce. */
+    async cambiarPinFirmante(firmanteId: string, pinActual: string, pinNuevo: string): Promise<void> {
+        const { error } = await supabase.rpc('mtto_cambiar_pin_firmante', {
+            p_firmante_id: firmanteId, p_pin_actual: pinActual, p_pin_nuevo: pinNuevo,
+        });
+        if (error) throw new Error(error.message);
+    },
+
+    async revisarConFirmante(ordenId: string, firmanteId: string, pin: string, obs: string): Promise<void> {
+        const { error } = await supabase.rpc('mtto_revisar_orden_firmante', {
+            p_orden_id: ordenId, p_firmante_id: firmanteId, p_pin: pin, p_obs: obs,
+        });
+        if (error) throw new Error(error.message);
+    },
+
+    async aprobarConFirmante(ordenId: string, firmanteId: string, pin: string, decision: MttoDecision, obs: string, valorAprobado: number, lineasAutorizadas?: string[]): Promise<void> {
+        const { error } = await supabase.rpc('mtto_aprobar_orden_firmante', {
+            p_orden_id: ordenId,
+            p_firmante_id: firmanteId,
+            p_pin: pin,
+            p_decision: decision,
+            p_obs: obs,
+            p_valor_aprobado: valorAprobado,
+            p_lineas_autorizadas: lineasAutorizadas ?? null,
+        });
+        if (error) throw new Error(error.message);
+    },
+
+    // ================================================================
+    // FIRMA POR ENLACE (sin sesión) + PIN
+    // Dos factores: el enlace llega al WhatsApp de la persona (algo que
+    // tiene) y el PIN lo sabe solo ella (algo que sabe).
+    // Ver 20260804_mtto_8_firma_por_enlace.sql.
+    // ================================================================
+
+    /**
+     * Genera el enlace de firma. Devuelve la URL completa UNA sola vez:
+     * el secreto no se puede recuperar después (en la base solo queda su
+     * hash). Si se pierde, hay que generar otro.
+     *
+     * Las fotos del bucket privado se firman aquí, aprovechando que quien
+     * genera el enlace sí tiene sesión, y viajan dentro del token para que
+     * el destinatario pueda verlas sin abrir el bucket.
+     */
+    async generarEnlaceFirma(params: {
+        ordenId: string;
+        accion: 'revisar' | 'aprobar' | 'diagnosticar';
+        firmanteId?: string;
+        usuarioId?: string;
+        horas?: number;
+    }): Promise<string> {
+        // Firma las URLs de todas las fotos de la orden
+        const [hallazgos, reparaciones] = await Promise.all([
+            this.listHallazgos(params.ordenId),
+            this.listReparaciones(params.ordenId),
+        ]);
+        const paths = [
+            ...hallazgos.flatMap((h) => (h.fotos || []).map((f) => f.path)),
+            ...reparaciones.flatMap((r) => (r.fotos || []).map((f) => f.path)),
+        ];
+
+        const fotos: Record<string, string> = {};
+        const expiraSegundos = (params.horas ?? 48) * 3600;
+        await Promise.all(paths.map(async (p) => {
+            try {
+                const { data } = await supabase.storage.from(BUCKET).createSignedUrl(p, expiraSegundos);
+                if (data?.signedUrl) fotos[p] = data.signedUrl;
+            } catch { /* si una foto falla, el resto del enlace sigue sirviendo */ }
+        }));
+
+        const { data, error } = await supabase.rpc('mtto_generar_token_firma', {
+            p_orden_id: params.ordenId,
+            p_accion: params.accion,
+            p_firmante_id: params.firmanteId ?? null,
+            p_usuario_id: params.usuarioId ?? null,
+            p_fotos: fotos,
+            p_horas: params.horas ?? 48,
+        });
+        if (error) throw new Error(error.message);
+        const ruta = params.accion === 'diagnosticar' ? 'diagnosticar' : 'firmar';
+        return `${window.location.origin}/${ruta}/${data}`;
+    },
+
+    // ── Diagnóstico por enlace (el mecánico, sin cuenta) ──────────────
+
+    async verDiagnosticoPorToken(token: string): Promise<any> {
+        const { data, error } = await supabase.rpc('mtto_ver_diagnostico_por_token', { p_token: token });
+        if (error) throw new Error(error.message);
+        return data;
+    },
+
+    /**
+     * Sube una foto SIN sesión, durante el diagnóstico por enlace. La
+     * política de storage solo lo permite mientras la orden tenga un enlace
+     * de diagnóstico vigente (ver 20260804_mtto_9). Devuelve la ruta, que
+     * luego viaja dentro del payload al guardar.
+     */
+    async subirFotoDiagnostico(ordenId: string, file: File | Blob): Promise<string> {
+        const comprimida = await compressImage(file, 1600, 0.7);
+        const path = `${ordenId}/tmp/${crypto.randomUUID()}.jpg`;
+        const { error } = await supabase.storage.from(BUCKET).upload(path, comprimida, { contentType: 'image/jpeg' });
+        if (error) throw new Error(error.message);
+        return path;
+    },
+
+    /** Guarda TODO el diagnóstico y lo envía a revisión, en una sola transacción. */
+    async guardarDiagnosticoPorToken(token: string, pin: string, payload: {
+        hallazgos: { item_id: string; estado: string; observacion: string; fotos: string[] }[];
+        reparaciones: any[];
+        diagnostico?: string;
+        kilometraje?: number | null;
+        ivaTasa?: number;
+    }): Promise<void> {
+        const { error } = await supabase.rpc('mtto_guardar_diagnostico_por_token', {
+            p_token: token,
+            p_pin: pin,
+            p_hallazgos: payload.hallazgos,
+            p_reparaciones: payload.reparaciones,
+            p_diagnostico: payload.diagnostico ?? null,
+            p_kilometraje: payload.kilometraje ?? null,
+            p_iva_tasa: payload.ivaTasa ?? null,
+        });
+        if (error) throw new Error(error.message);
+    },
+
+    /** Lee la orden desde el enlace, sin sesión. */
+    async verOrdenPorToken(token: string): Promise<any> {
+        const { data, error } = await supabase.rpc('mtto_ver_orden_por_token', { p_token: token });
+        if (error) throw new Error(error.message);
+        return data;
+    },
+
+    async firmarPorToken(token: string, pin: string, opts?: {
+        obs?: string;
+        decision?: MttoDecision;
+        valorAprobado?: number;
+        lineasAutorizadas?: string[];
+    }): Promise<void> {
+        const { error } = await supabase.rpc('mtto_firmar_por_token', {
+            p_token: token,
+            p_pin: pin,
+            p_obs: opts?.obs ?? null,
+            p_decision: opts?.decision ?? null,
+            p_valor_aprobado: opts?.valorAprobado ?? null,
+            p_lineas_autorizadas: opts?.lineasAutorizadas ?? null,
+        });
         if (error) throw new Error(error.message);
     },
 

@@ -28,6 +28,8 @@ export interface MenuItem {
     to: string;
     label: string;
     icon: any;
+    /** Oculta el ítem a quien no sea administrador, aunque esté en allowed_menus. */
+    adminOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -97,8 +99,10 @@ export const NAV_GROUPS: NavGroup[] = [
         items: [
             { id: 'mtto-hub', to: '/mantenimiento', icon: Wrench, label: 'Mantenimiento Vehicular' },
             { id: 'mtto-historial', to: '/mantenimiento/historial', icon: History, label: 'Historial por Vehículo' },
-            { id: 'mtto-vehiculos', to: '/mantenimiento/vehiculos', icon: Truck, label: 'Flota de Vehículos' },
-            { id: 'mtto-catalogo', to: '/mantenimiento/catalogo', icon: Package, label: 'Catálogo de Precios (Mtto)' },
+            { id: 'mtto-vehiculos', to: '/mantenimiento/vehiculos', icon: Truck, label: 'Flota de Vehículos', adminOnly: true },
+            // Aquí se asignan los PIN de firma: solo administradores.
+            { id: 'mtto-personal', to: '/mantenimiento/personal', icon: Users, label: 'Personal de Mantenimiento', adminOnly: true },
+            { id: 'mtto-catalogo', to: '/mantenimiento/catalogo', icon: Package, label: 'Catálogo de Precios (Mtto)', adminOnly: true },
         ]
     },
     {

@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import {
     MttoService,
     type MttoOrden, type MttoVehiculo, type MttoOrdenHallazgo, type MttoOrdenFoto,
-    type MttoOrdenReparacion, type ChecklistSeccionConItems, type MttoOrdenTotal, type MttoOrdenEvento,
+    type MttoOrdenReparacion, type ChecklistSeccionConItems, type MttoOrdenTotal, type MttoEventoConAutor,
     type MttoReparacionFoto,
 } from '../lib/mttoService';
 import { ESTADO_LABEL, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money } from '../lib/mttoLabels';
@@ -22,8 +22,9 @@ export function MaintenanceOrderPrint() {
     const [hallazgos, setHallazgos] = useState<HallazgoConFotos[]>([]);
     const [reparaciones, setReparaciones] = useState<(MttoOrdenReparacion & { fotos?: MttoReparacionFoto[] })[]>([]);
     const [totales, setTotales] = useState<MttoOrdenTotal | null>(null);
-    const [eventos, setEventos] = useState<(MttoOrdenEvento & { usuario?: Firmante })[]>([]);
+    const [eventos, setEventos] = useState<MttoEventoConAutor[]>([]);
     const [firmantes, setFirmantes] = useState<Record<string, Firmante>>({});
+    const [sinCuenta, setSinCuenta] = useState<Record<string, { nombre: string; documento: string | null }>>({});
     const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
 
     useEffect(() => {
@@ -47,6 +48,12 @@ export function MaintenanceOrderPrint() {
                 setReparaciones(reparacionesData);
                 setTotales(totalesData);
                 setEventos(eventosData);
+
+                const idsFirmante = [ordenData.revisado_por_firmante, ordenData.aprobado_por_firmante].filter(Boolean) as string[];
+                if (idsFirmante.length > 0) {
+                    const fs = await MttoService.listFirmantes();
+                    setSinCuenta(Object.fromEntries(fs.filter((f) => idsFirmante.includes(f.id)).map((f) => [f.id, { nombre: f.nombre, documento: f.documento }])));
+                }
 
                 const ids = [ordenData.creado_por, ordenData.revisado_por, ordenData.aprobado_por].filter(Boolean) as string[];
                 if (ids.length > 0) {
@@ -218,8 +225,14 @@ export function MaintenanceOrderPrint() {
             <Seccion titulo="Firmas electrónicas">
                 <div className="grid grid-cols-3 gap-3 text-xs">
                     <Firma label="Creación (mecánico)" nombre={firmantes[orden.creado_por]?.full_name} fecha={orden.enviado_at || orden.created_at} />
-                    <Firma label="Revisión (encargado de flota)" nombre={orden.revisado_por ? firmantes[orden.revisado_por]?.full_name : null} fecha={orden.revisado_at} />
-                    <Firma label="Aprobación (resp. mantenimiento)" nombre={orden.aprobado_por ? firmantes[orden.aprobado_por]?.full_name : null} fecha={orden.aprobado_at} />
+                    <Firma label="Revisión (encargado de flota)"
+                        nombre={orden.revisado_por ? firmantes[orden.revisado_por]?.full_name : (orden.revisado_por_firmante ? sinCuenta[orden.revisado_por_firmante]?.nombre : null)}
+                        documento={orden.revisado_por_firmante ? sinCuenta[orden.revisado_por_firmante]?.documento : null}
+                        fecha={orden.revisado_at} />
+                    <Firma label="Aprobación (resp. mantenimiento)"
+                        nombre={orden.aprobado_por ? firmantes[orden.aprobado_por]?.full_name : (orden.aprobado_por_firmante ? sinCuenta[orden.aprobado_por_firmante]?.nombre : null)}
+                        documento={orden.aprobado_por_firmante ? sinCuenta[orden.aprobado_por_firmante]?.documento : null}
+                        fecha={orden.aprobado_at} />
                 </div>
             </Seccion>
 
@@ -228,7 +241,7 @@ export function MaintenanceOrderPrint() {
                 <div className="space-y-1 text-xs">
                     {eventos.map((e) => (
                         <div key={e.id} className="flex justify-between border-b border-border/30 py-0.5">
-                            <span>{EVENTO_LABEL[e.accion] || e.accion} — {e.usuario?.full_name || 'Usuario'}</span>
+                            <span>{EVENTO_LABEL[e.accion] || e.accion} — {e.usuario?.full_name || e.firmante?.nombre || 'Usuario'}</span>
                             <span className="text-muted-foreground">{new Date(e.created_at).toLocaleString('es-CO')}</span>
                         </div>
                     ))}
@@ -256,13 +269,14 @@ function Seccion({ titulo, children }: { titulo: string; children: React.ReactNo
     );
 }
 
-function Firma({ label, nombre, fecha }: { label: string; nombre?: string | null; fecha: string | null }) {
+function Firma({ label, nombre, documento, fecha }: { label: string; nombre?: string | null; documento?: string | null; fecha: string | null }) {
     return (
         <div className="border border-border rounded-lg p-2">
             <div className="text-muted-foreground mb-1">{label}</div>
             {nombre ? (
                 <>
                     <div className="font-semibold">{nombre}</div>
+                    {documento && <div className="text-muted-foreground">C.C. {documento}</div>}
                     <div className="text-muted-foreground">{fecha ? new Date(fecha).toLocaleString('es-CO') : ''}</div>
                 </>
             ) : (

@@ -364,6 +364,8 @@ export type Database = {
                     revisado_at: string | null
                     obs_encargado: string | null
                     aprobado_por: string | null
+                    revisado_por_firmante: string | null
+                    aprobado_por_firmante: string | null
                     aprobado_at: string | null
                     decision: MttoDecision | null
                     obs_aprobador: string | null
@@ -390,6 +392,8 @@ export type Database = {
                     revisado_at?: string | null
                     obs_encargado?: string | null
                     aprobado_por?: string | null
+                    revisado_por_firmante?: string | null
+                    aprobado_por_firmante?: string | null
                     aprobado_at?: string | null
                     decision?: MttoDecision | null
                     obs_aprobador?: string | null
@@ -416,6 +420,8 @@ export type Database = {
                     revisado_at?: string | null
                     obs_encargado?: string | null
                     aprobado_por?: string | null
+                    revisado_por_firmante?: string | null
+                    aprobado_por_firmante?: string | null
                     aprobado_at?: string | null
                     decision?: MttoDecision | null
                     obs_aprobador?: string | null
@@ -531,6 +537,42 @@ export type Database = {
                     created_at?: string
                 }
             }
+            mtto_firmante: {
+                Row: {
+                    id: string
+                    org_id: string
+                    nombre: string
+                    documento: string | null
+                    cargo: string | null
+                    rol: MttoRol
+                    pin_intentos_fallidos: number
+                    pin_bloqueado_hasta: string | null
+                    pin_definido_por_admin: boolean
+                    tiene_pin: boolean
+                    activo: boolean
+                    creado_por: string
+                    created_at: string
+                }
+                Insert: {
+                    id?: string
+                    org_id?: string
+                    nombre: string
+                    documento?: string | null
+                    cargo?: string | null
+                    rol: MttoRol
+                    activo?: boolean
+                    creado_por?: string
+                    created_at?: string
+                }
+                Update: {
+                    id?: string
+                    nombre?: string
+                    documento?: string | null
+                    cargo?: string | null
+                    rol?: MttoRol
+                    activo?: boolean
+                }
+            }
             mtto_reparacion_foto: {
                 Row: {
                     id: string
@@ -564,7 +606,8 @@ export type Database = {
                 Row: {
                     id: string
                     orden_id: string
-                    usuario_id: string
+                    usuario_id: string | null
+                    firmante_id: string | null
                     accion: string
                     detalle: Json
                     created_at: string
@@ -572,7 +615,8 @@ export type Database = {
                 Insert: {
                     id?: string
                     orden_id: string
-                    usuario_id: string
+                    usuario_id?: string | null
+                    firmante_id?: string | null
                     accion: string
                     detalle?: Json
                     created_at?: string

@@ -9,8 +9,8 @@ import {
     MttoService,
     type MttoOrden, type MttoVehiculo, type MttoOrdenHallazgo, type MttoOrdenFoto,
     type MttoOrdenReparacion, type ChecklistSeccionConItems, type CatalogoSistemaConArreglos,
-    type MttoOrdenEvento, type MttoChecklistItem, type MttoUsuarioRol,
-    type MttoReparacionFoto,
+    type MttoChecklistItem, type MttoUsuarioRol, type MttoEventoConAutor,
+    type MttoReparacionFoto, type MttoFirmante,
 } from '../lib/mttoService';
 import type { MttoEstadoHallazgo, MttoTipoServicio, MttoDecision, MttoPrioridad } from '../types/database';
 import { ESTADO_LABEL, ESTADO_COLOR, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money, toast } from '../lib/mttoLabels';
@@ -18,6 +18,8 @@ import { ESTADO_LABEL, ESTADO_COLOR, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money, t
 type OrdenConVehiculo = MttoOrden & { vehiculo?: MttoVehiculo };
 type HallazgoConFotos = MttoOrdenHallazgo & { fotos?: MttoOrdenFoto[] };
 type ReparacionConFotos = MttoOrdenReparacion & { fotos?: MttoReparacionFoto[] };
+/** Candidato a firmar: usuario con cuenta o persona registrada solo en el módulo. */
+type Candidato = { valor: string; nombre: string; conCuenta: boolean; tienePin: boolean };
 
 // ============================================================
 // Wrapper de bloqueo visual: opacidad + no-interactivo cuando el
@@ -55,8 +57,34 @@ export function MaintenanceOrder() {
     const [hallazgos, setHallazgos] = useState<HallazgoConFotos[]>([]);
     const [reparaciones, setReparaciones] = useState<ReparacionConFotos[]>([]);
     const [catalogo, setCatalogo] = useState<CatalogoSistemaConArreglos[]>([]);
-    const [eventos, setEventos] = useState<(MttoOrdenEvento & { usuario?: { full_name: string | null } })[]>([]);
+    const [eventos, setEventos] = useState<MttoEventoConAutor[]>([]);
     const [tab, setTab] = useState<'vehiculo' | 'inspeccion' | 'reparaciones' | 'revision'>('vehiculo');
+    const [mecanicosFirmantes, setMecanicosFirmantes] = useState<Candidato[]>([]);
+
+    // Destinatarios del enlace de diagnóstico: el supervisor que va al taller.
+    // Puede tener cuenta (usa su PIN de "Mi PIN") o no tenerla (registrado en
+    // Personal de Mantenimiento).
+    useEffect(() => {
+        Promise.all([
+            MttoService.listFirmantes(true).catch(() => []),
+            MttoService.listUsuariosRol().catch(() => []),
+        ]).then(([fs, us]) => {
+            setMecanicosFirmantes([
+                ...us.filter((u) => u.activo).map((u) => ({
+                    valor: `usuario:${u.usuario_id}`,
+                    nombre: u.profile?.full_name || u.nombre || 'Usuario',
+                    conCuenta: true,
+                    tienePin: true,
+                })),
+                ...fs.map((f) => ({
+                    valor: `firmante:${f.id}`,
+                    nombre: f.documento ? `${f.nombre} (C.C. ${f.documento})` : f.nombre,
+                    conCuenta: false,
+                    tienePin: f.tiene_pin,
+                })),
+            ]);
+        });
+    }, []);
 
     const cargarTodo = useCallback(async () => {
         if (!id) return;
@@ -173,7 +201,7 @@ export function MaintenanceOrder() {
 
             <div className="p-3">
                 {tab === 'vehiculo' && (
-                    <TabVehiculo orden={orden} puedoEditar={puedoEditarContenido} onGuardado={cargarTodo} />
+                    <TabVehiculo orden={orden} puedoEditar={puedoEditarContenido} onGuardado={cargarTodo} mecanicos={mecanicosFirmantes} />
                 )}
                 {tab === 'inspeccion' && (
                     <TabInspeccion
@@ -227,8 +255,8 @@ export function MaintenanceOrder() {
 // ============================================================
 // TAB 1 — Vehículo
 // ============================================================
-function TabVehiculo({ orden, puedoEditar, onGuardado }: {
-    orden: OrdenConVehiculo; puedoEditar: boolean; onGuardado: () => void;
+function TabVehiculo({ orden, puedoEditar, onGuardado, mecanicos }: {
+    orden: OrdenConVehiculo; puedoEditar: boolean; onGuardado: () => void; mecanicos: Candidato[];
 }) {
     const v = orden.vehiculo!;
     const [kilometraje, setKilometraje] = useState(orden.kilometraje?.toString() || '');
@@ -257,6 +285,20 @@ function TabVehiculo({ orden, puedoEditar, onGuardado }: {
 
     return (
         <div className="space-y-4">
+            {/* El mecánico es externo y no tiene cuenta: se le manda un enlace
+                para que llene el diagnóstico desde su propio celular. */}
+            {orden.estado === 'borrador' && (
+                <div className="bg-card border border-border rounded-xl p-4">
+                    <h3 className="font-bold text-sm mb-2">Enviar enlace de diagnóstico</h3>
+                    <p className="text-xs text-muted-foreground mb-2">
+                        Mándeselo al supervisor que va al taller. Él le pregunta al mecánico,
+                        marca los ítems, toma las fotos y cotiza desde su celular. Al enviar con
+                        su PIN, la orden pasa directo a aprobación.
+                    </p>
+                    <EnlaceFirma ordenId={orden.id} accion="diagnosticar" candidatos={mecanicos} />
+                </div>
+            )}
+
             <div className="bg-card border border-border rounded-xl p-4">
                 <h3 className="font-bold mb-3">{v.codigo} — {v.tipo === 'motocarro' ? 'Motocarro' : 'Moto con tráiler'}</h3>
                 <div className="grid grid-cols-2 gap-3 text-sm">
@@ -916,7 +958,7 @@ function ArregloPicker({ catalogo, onElegir, onCerrar }: {
 function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar, puedoDevolver, onCambio }: {
     orden: MttoOrden;
     reparaciones: ReparacionConFotos[];
-    eventos: (MttoOrdenEvento & { usuario?: { full_name: string | null } })[];
+    eventos: MttoEventoConAutor[];
     puedoRevisar: boolean;
     puedoAprobar: boolean;
     puedoDevolver: boolean;
@@ -931,7 +973,8 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
     const [mostrarDevolucion, setMostrarDevolucion] = useState(false);
     const [procesando, setProcesando] = useState(false);
 
-    const [usuariosRol, setUsuariosRol] = useState<MttoUsuarioRol[]>([]);
+    const [usuariosRol, setUsuariosRol] = useState<(MttoUsuarioRol & { profile?: { full_name: string | null } })[]>([]);
+    const [firmantes, setFirmantes] = useState<MttoFirmante[]>([]);
     const [mostrarPinRevisar, setMostrarPinRevisar] = useState(false);
     const [firmanteRevisar, setFirmanteRevisar] = useState('');
     const [pinRevisar, setPinRevisar] = useState('');
@@ -941,10 +984,35 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
 
     useEffect(() => {
         MttoService.listUsuariosRol().then(setUsuariosRol).catch(() => {});
+        MttoService.listFirmantes(true).then(setFirmantes).catch(() => {});
     }, []);
 
-    const encargados = usuariosRol.filter((u) => u.rol === 'encargado' || u.rol === 'admin');
-    const aprobadores = usuariosRol.filter((u) => u.rol === 'aprobador' || u.rol === 'admin');
+    /**
+     * Candidatos a firmar: mezcla usuarios con cuenta (mtto_usuario_rol) y
+     * personas sin cuenta (mtto_firmante). El prefijo del valor indica a qué
+     * RPC hay que llamar al confirmar.
+     */
+    const candidatosPara = (rol: 'encargado' | 'aprobador'): Candidato[] => [
+        ...usuariosRol
+            .filter((u) => u.activo && (u.rol === rol || u.rol === 'admin'))
+            .map((u) => ({
+                valor: `usuario:${u.usuario_id}`,
+                nombre: u.profile?.full_name || u.nombre || 'Usuario',
+                conCuenta: true,
+                tienePin: true, // el usuario configura el suyo desde "Mi PIN"
+            })),
+        ...firmantes
+            .filter((f) => f.rol === rol || f.rol === 'admin')
+            .map((f) => ({
+                valor: `firmante:${f.id}`,
+                nombre: f.documento ? `${f.nombre} (C.C. ${f.documento})` : f.nombre,
+                conCuenta: false,
+                tienePin: f.tiene_pin,
+            })),
+    ];
+
+    const encargados = candidatosPara('encargado');
+    const aprobadores = candidatosPara('aprobador');
 
     const subtotal = reparaciones.reduce((acc, r) => acc + Number(r.total), 0);
     const totalPropuesto = Math.round(subtotal * (1 + orden.iva_tasa));
@@ -965,9 +1033,14 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
     const firmarRevisionPin = async () => {
         if (!firmanteRevisar) { toast('Seleccione quién firma', 'error'); return; }
         if (!/^\d{4,6}$/.test(pinRevisar)) { toast('PIN inválido', 'error'); return; }
+        const [tipo, id] = firmanteRevisar.split(':');
         setProcesando(true);
         try {
-            await MttoService.revisarConPin(orden.id, firmanteRevisar, pinRevisar, obsEncargado);
+            if (tipo === 'firmante') {
+                await MttoService.revisarConFirmante(orden.id, id, pinRevisar, obsEncargado);
+            } else {
+                await MttoService.revisarConPin(orden.id, id, pinRevisar, obsEncargado);
+            }
             toast('Orden revisada y enviada a aprobación', 'success');
             setPinRevisar('');
             setMostrarPinRevisar(false);
@@ -994,12 +1067,15 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
     const firmarAprobacionPin = async () => {
         if (!firmanteAprobar) { toast('Seleccione quién firma', 'error'); return; }
         if (!/^\d{4,6}$/.test(pinAprobar)) { toast('PIN inválido', 'error'); return; }
+        const [tipo, id] = firmanteAprobar.split(':');
+        const lineas = decision === 'aprobado_parcial' ? Array.from(lineasElegidas) : undefined;
         setProcesando(true);
         try {
-            await MttoService.aprobarConPin(
-                orden.id, firmanteAprobar, pinAprobar, decision, obsAprobador, Number(valorAprobado || 0),
-                decision === 'aprobado_parcial' ? Array.from(lineasElegidas) : undefined
-            );
+            if (tipo === 'firmante') {
+                await MttoService.aprobarConFirmante(orden.id, id, pinAprobar, decision, obsAprobador, Number(valorAprobado || 0), lineas);
+            } else {
+                await MttoService.aprobarConPin(orden.id, id, pinAprobar, decision, obsAprobador, Number(valorAprobado || 0), lineas);
+            }
             toast('Decisión registrada', 'success');
             setPinAprobar('');
             setMostrarPinAprobar(false);
@@ -1051,6 +1127,9 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
                         <Lock className="w-3.5 h-3.5 shrink-0" /> Solo disponible con la orden en "{ESTADO_LABEL.en_revision}".
                     </div>
                 ) : (
+                    <>
+                    <EnlaceFirma ordenId={orden.id} accion="revisar" candidatos={encargados} />
+                    <div className="h-2" />
                     <FirmaPin
                         etiqueta="encargado de flota"
                         candidatos={encargados}
@@ -1063,6 +1142,7 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
                         onConfirmar={firmarRevisionPin}
                         procesando={procesando}
                     />
+                    </>
                 )}
             </div>
 
@@ -1119,6 +1199,9 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
                         <Lock className="w-3.5 h-3.5 shrink-0" /> Solo disponible con la orden en "{ESTADO_LABEL.en_aprobacion}".
                     </div>
                 ) : (
+                    <>
+                    <EnlaceFirma ordenId={orden.id} accion="aprobar" candidatos={aprobadores} />
+                    <div className="h-2" />
                     <FirmaPin
                         etiqueta="aprobador"
                         candidatos={aprobadores}
@@ -1131,6 +1214,7 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
                         onConfirmar={firmarAprobacionPin}
                         procesando={procesando}
                     />
+                    </>
                 )}
             </div>
 
@@ -1159,7 +1243,7 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
                         <div key={e.id} className="text-sm border-l-2 border-primary/40 pl-3 py-0.5">
                             <div className="font-medium">{EVENTO_LABEL[e.accion] || e.accion}</div>
                             <div className="text-xs text-muted-foreground">
-                                {e.usuario?.full_name || 'Usuario'} · {new Date(e.created_at).toLocaleString('es-CO')}
+                                {e.usuario?.full_name || e.firmante?.nombre || 'Usuario'} · {new Date(e.created_at).toLocaleString('es-CO')}
                             </div>
                         </div>
                     ))}
@@ -1176,9 +1260,102 @@ function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar,
 // y la orden queda firmada por el usuario_id real del firmante, no
 // por quien tiene la sesión abierta en el dispositivo.
 // ============================================================
+/**
+ * Genera un enlace de firma para mandar por WhatsApp. La persona lo abre en
+ * SU celular, revisa la orden completa y firma con su PIN — sin cuenta y sin
+ * pasarse el teléfono. El enlace es de un solo uso y vence en 48 horas.
+ */
+function EnlaceFirma({ ordenId, accion, candidatos }: {
+    ordenId: string;
+    accion: 'revisar' | 'aprobar' | 'diagnosticar';
+    candidatos: Candidato[];
+}) {
+    const [abierto, setAbierto] = useState(false);
+    const [destinatario, setDestinatario] = useState('');
+    const [generando, setGenerando] = useState(false);
+    const [enlace, setEnlace] = useState('');
+
+    const generar = async () => {
+        if (!destinatario) { toast('Seleccione a quién va dirigido', 'error'); return; }
+        const [tipo, id] = destinatario.split(':');
+        setGenerando(true);
+        try {
+            const url = await MttoService.generarEnlaceFirma({
+                ordenId,
+                accion,
+                firmanteId: tipo === 'firmante' ? id : undefined,
+                usuarioId: tipo === 'usuario' ? id : undefined,
+            });
+            setEnlace(url);
+        } catch (e: any) {
+            toast('No se pudo generar el enlace', 'error', e.message);
+        } finally {
+            setGenerando(false);
+        }
+    };
+
+    const nombreDestino = candidatos.find((c) => c.valor === destinatario)?.nombre || '';
+    const mensaje = `Hola${nombreDestino ? ` ${nombreDestino.split(' (')[0]}` : ''}, por favor ${accion === 'aprobar' ? 'apruebe' : 'revise'} esta orden de mantenimiento. Abra el enlace y firme con su PIN:\n${enlace}`;
+
+    if (!abierto) {
+        return (
+            <button onClick={() => setAbierto(true)}
+                className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-border text-muted-foreground py-3 rounded-xl font-semibold text-sm min-h-[44px]">
+                <Send className="w-4 h-4" /> {accion === 'diagnosticar' ? 'Enviar enlace de diagnóstico' : 'Enviar enlace por WhatsApp'}
+            </button>
+        );
+    }
+
+    return (
+        <div className="border-2 border-primary/30 rounded-xl p-3 space-y-2">
+            {!enlace ? (
+                <>
+                    <p className="text-xs text-muted-foreground">
+                        Se genera un enlace de un solo uso, válido 48 horas. La persona lo abre en su
+                        propio celular y firma con su PIN — no necesita cuenta.
+                    </p>
+                    <select value={destinatario} onChange={(e) => setDestinatario(e.target.value)}
+                        className="w-full border border-border rounded-lg px-3 py-2.5 bg-background text-sm min-h-[44px]">
+                        <option value="">¿A quién se lo envía?</option>
+                        {candidatos.map((c) => (
+                            <option key={c.valor} value={c.valor} disabled={!c.tienePin}>
+                                {c.nombre}{!c.tienePin ? ' (sin PIN asignado)' : ''}
+                            </option>
+                        ))}
+                    </select>
+                    <div className="flex gap-2">
+                        <button onClick={generar} disabled={generando || !destinatario}
+                            className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-lg font-semibold min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">
+                            {generando && <Loader2 className="w-4 h-4 animate-spin" />} Generar enlace
+                        </button>
+                        <button onClick={() => setAbierto(false)} className="px-4 py-2.5 rounded-lg border border-border min-h-[44px]">Cancelar</button>
+                    </div>
+                </>
+            ) : (
+                <>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                        Enlace generado. Cópielo ahora: por seguridad no se puede volver a ver.
+                    </p>
+                    <div className="text-[11px] break-all bg-muted rounded-lg p-2 font-mono">{enlace}</div>
+                    <div className="flex gap-2 flex-wrap">
+                        <a href={`https://wa.me/?text=${encodeURIComponent(mensaje)}`} target="_blank" rel="noreferrer"
+                            className="flex-1 bg-emerald-600 text-white py-2.5 rounded-lg font-semibold text-sm min-h-[44px] flex items-center justify-center gap-2">
+                            <Send className="w-4 h-4" /> Abrir WhatsApp
+                        </a>
+                        <button onClick={() => { navigator.clipboard.writeText(enlace); toast('Enlace copiado', 'success'); }}
+                            className="px-4 py-2.5 rounded-lg border border-border text-sm min-h-[44px]">Copiar</button>
+                    </div>
+                    <button onClick={() => { setEnlace(''); setAbierto(false); }}
+                        className="text-xs text-muted-foreground underline min-h-[36px]">Cerrar</button>
+                </>
+            )}
+        </div>
+    );
+}
+
 function FirmaPin({ etiqueta, candidatos, abierto, onAbrir, firmante, onFirmante, pin, onPin, onConfirmar, procesando }: {
     etiqueta: string;
-    candidatos: (MttoUsuarioRol & { profile?: { full_name: string | null } })[];
+    candidatos: Candidato[];
     abierto: boolean;
     onAbrir: () => void;
     firmante: string;
@@ -1188,6 +1365,28 @@ function FirmaPin({ etiqueta, candidatos, abierto, onAbrir, firmante, onFirmante
     onConfirmar: () => void;
     procesando: boolean;
 }) {
+    const [cambiarPin, setCambiarPin] = useState(false);
+    const [pinNuevo, setPinNuevo] = useState('');
+    const [cambiando, setCambiando] = useState(false);
+
+    const elegido = candidatos.find((c) => c.valor === firmante);
+    const esFirmanteSinCuenta = firmante.startsWith('firmante:');
+
+    const hacerCambioPin = async () => {
+        if (!/^\d{4,6}$/.test(pin)) { toast('Escriba primero su PIN actual', 'error'); return; }
+        if (!/^\d{4,6}$/.test(pinNuevo)) { toast('El PIN nuevo debe tener entre 4 y 6 dígitos', 'error'); return; }
+        setCambiando(true);
+        try {
+            await MttoService.cambiarPinFirmante(firmante.split(':')[1], pin, pinNuevo);
+            toast('PIN cambiado', 'success', 'Desde ahora solo usted lo conoce.');
+            onPin(pinNuevo);
+            setPinNuevo('');
+            setCambiarPin(false);
+        } catch (e: any) {
+            toast('No se pudo cambiar el PIN', 'error', e.message);
+        } finally { setCambiando(false); }
+    };
+
     if (!abierto) {
         return (
             <button onClick={onAbrir} className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-border text-muted-foreground py-3 rounded-xl font-semibold text-sm min-h-[44px]">
@@ -1204,18 +1403,53 @@ function FirmaPin({ etiqueta, candidatos, abierto, onAbrir, firmante, onFirmante
             <select value={firmante} onChange={(e) => onFirmante(e.target.value)}
                 className="w-full border border-border rounded-lg px-3 py-2.5 bg-background text-sm min-h-[44px]">
                 <option value="">Seleccione quién firma...</option>
-                {candidatos.map((u) => (
-                    <option key={u.usuario_id} value={u.usuario_id}>{u.profile?.full_name || u.nombre || u.usuario_id}</option>
+                {candidatos.map((c) => (
+                    <option key={c.valor} value={c.valor} disabled={!c.tienePin}>
+                        {c.nombre}{!c.conCuenta ? ' — sin cuenta' : ''}{!c.tienePin ? ' (sin PIN asignado)' : ''}
+                    </option>
                 ))}
             </select>
+
+            {elegido && !elegido.tienePin && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Esa persona todavía no tiene PIN. Asígneselo en Mantenimiento → Personal.
+                </p>
+            )}
+
             <input
                 type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6}
                 value={pin} onChange={(e) => onPin(e.target.value.replace(/\D/g, ''))}
                 placeholder="PIN"
                 className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px] tracking-widest text-center text-lg"
             />
+
+            {/* Cambio de PIN: solo para personas sin cuenta, cuyo PIN inicial
+                lo creó el administrador. Al cambiarlo, queda solo suyo. */}
+            {esFirmanteSinCuenta && (
+                cambiarPin ? (
+                    <div className="space-y-2 border-t border-border pt-2">
+                        <p className="text-xs text-muted-foreground">Escriba arriba su PIN actual y aquí el nuevo:</p>
+                        <input type="password" inputMode="numeric" maxLength={6} value={pinNuevo}
+                            onChange={(e) => setPinNuevo(e.target.value.replace(/\D/g, ''))}
+                            placeholder="PIN nuevo"
+                            className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px] tracking-widest text-center text-lg" />
+                        <div className="flex gap-2">
+                            <button onClick={hacerCambioPin} disabled={cambiando}
+                                className="flex-1 bg-muted text-foreground py-2.5 rounded-lg font-semibold text-sm min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">
+                                {cambiando && <Loader2 className="w-4 h-4 animate-spin" />} Guardar PIN nuevo
+                            </button>
+                            <button onClick={() => setCambiarPin(false)} className="px-3 py-2.5 rounded-lg border border-border text-sm min-h-[44px]">Cancelar</button>
+                        </div>
+                    </div>
+                ) : (
+                    <button onClick={() => setCambiarPin(true)} className="text-xs text-muted-foreground underline min-h-[36px]">
+                        Cambiar mi PIN (recomendado la primera vez)
+                    </button>
+                )
+            )}
+
             <div className="flex gap-2">
-                <button onClick={onConfirmar} disabled={procesando || !firmante || pin.length < 4}
+                <button onClick={onConfirmar} disabled={procesando || !firmante || pin.length < 4 || (elegido && !elegido.tienePin)}
                     className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-lg font-semibold min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">
                     {procesando && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar con PIN
                 </button>

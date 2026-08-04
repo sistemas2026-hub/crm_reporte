@@ -78,6 +78,123 @@ Roles válidos: `mecanico`, `encargado` (encargado de flota), `aprobador`
 usuario tiene **un solo rol** en el módulo (la tabla usa `usuario_id` como
 llave primaria).
 
+## 2b. Personas que firman sin tener cuenta
+
+Además de los usuarios con cuenta, el módulo admite **firmantes sin cuenta**:
+personas registradas solo dentro del módulo (nombre, documento, cargo, rol y
+un PIN), que **no pueden iniciar sesión** pero sí revisar y aprobar órdenes
+desde el celular del mecánico.
+
+Se administran en **Mantenimiento → Personal de Mantenimiento**
+(`/mantenimiento/personal`), solo por un admin del módulo. El flujo es:
+
+1. El admin registra a la persona y le asigna un **PIN inicial**.
+2. Se lo entrega en persona.
+3. La primera vez que firma, la persona usa **"Cambiar mi PIN"** en la
+   pantalla de firma. Desde ese momento solo ella lo conoce.
+
+**Por qué importa el paso 3:** mientras el PIN sea el que puso el admin,
+quien lo creó podría firmar en nombre de esa persona. La pantalla de personal
+marca en ámbar a quienes todavía tienen el PIN puesto por el admin, y en
+verde a quienes ya lo cambiaron. Conviene revisarla periódicamente.
+
+La firma queda igual de auditable que la de un usuario con cuenta: se guarda
+el id del firmante y la hora del servidor en `mtto_orden_evento`
+(append-only), y en la orden queda en `revisado_por_firmante` /
+`aprobado_por_firmante`. La vista imprimible muestra el nombre y la cédula.
+
+El PIN se guarda con bcrypt, nunca viaja al navegador (el `SELECT` sobre
+`pin_hash` está revocado) y se bloquea 15 minutos tras 5 intentos fallidos.
+
+## 2c. Firma por enlace (WhatsApp) — dos factores
+
+Además de firmar en el celular del mecánico, se puede **mandar un enlace**
+para que el encargado o el aprobador firmen desde su propio teléfono, cuando
+puedan, sin cuenta y sin instalar nada.
+
+En la pestaña *Revisión y aprobación* aparece **"Enviar enlace por WhatsApp"**:
+se elige al destinatario, se genera el enlace y se abre WhatsApp con el
+mensaje listo (o se copia). La persona lo abre, ve la orden completa —
+hallazgos, fotos, cotización y total — y firma con su PIN.
+
+**La seguridad son dos factores:**
+
+| | Qué prueba |
+|---|---|
+| El enlace | *Algo que tiene*: llegó a su WhatsApp |
+| El PIN | *Algo que sabe*: solo él lo conoce |
+
+Si el enlace se reenvía por error, sin el PIN no sirve de nada.
+
+Detalles de la implementación:
+
+- El token tiene la forma `{uuid}.{secreto}`; en la base solo se guarda el
+  **hash bcrypt del secreto**, así que ni con acceso a la tabla se pueden
+  reconstruir enlaces válidos.
+- **Un solo uso** y **caducidad de 48 h**. Generar un enlace nuevo anula el
+  anterior de esa misma acción.
+- El enlace solo funciona si la orden sigue en el estado que corresponde; si
+  alguien ya firmó, deja de servir.
+- Las fotos viven en un bucket privado. Como quien abre el enlace no tiene
+  sesión, las **URLs firmadas se generan al crear el enlace** (cuando el
+  mecánico sí está autenticado) y viajan dentro del token. El bucket nunca
+  se abre al público.
+- Las funciones `mtto_ver_orden_por_token` y `mtto_firmar_por_token` son las
+  únicas otorgadas al rol `anon`, y todo su alcance lo acota el token.
+
+## 2d. El flujo real (corto): dos enlaces
+
+Caso de RAPILINK: el mecánico es externo y no tiene cuenta; el aprobador
+tampoco. Solo el administrador y los supervisores tienen usuario.
+
+1. **El administrador** crea la orden (vehículo, tipo de servicio, taller,
+   motivo). Queda en `borrador`.
+2. En la pestaña *Vehículo*, **"Enviar enlace de diagnóstico"** → se lo manda
+   por WhatsApp al **supervisor**.
+3. **El supervisor** va al taller, abre el enlace en su celular
+   (`/diagnosticar/{token}`), le va preguntando al mecánico, marca los ítems
+   en R/M/NA, escribe observaciones, **toma las fotos**, cotiza con el
+   catálogo, y envía con su **PIN**.
+4. **El administrador** manda el enlace de **aprobación** al aprobador.
+5. **El aprobador** abre el enlace, revisa hallazgos, fotos y cotización,
+   escribe observaciones y decide (aprobado / parcial / no aprobado) con su
+   PIN.
+
+**El paso intermedio de "revisión del encargado de flota" ya no es una parada
+aparte.** El envío del supervisor cuenta como diagnóstico *y* como revisión:
+la orden pasa de `borrador` directo a `en_aprobacion`. La trazabilidad no se
+pierde — se registran los dos eventos firmados por el supervisor, y la orden
+guarda `revisado_por` como siempre, así que el aprobador ve quién validó
+antes que él. Ver `20260804_mtto_10_flujo_corto.sql`.
+
+El enlace de diagnóstico puede ir a alguien **con cuenta** (el supervisor usa
+el PIN que configuró en *Mi PIN*) o **sin cuenta** (registrado en Personal de
+Mantenimiento). En ambos casos el PIN es lo que prueba la identidad.
+
+Nadie instaló nada y nadie inició sesión, pero cada paso quedó firmado por
+una persona concreta, con hora del servidor y trazabilidad append-only.
+
+**Detalles del diagnóstico por enlace:**
+
+- Todo el diagnóstico se guarda en **una sola llamada al enviar**: así el PIN
+  se valida una vez, todo entra en una transacción y las validaciones duras
+  (observación en R/M, foto en M, cotización si hay M) corren juntas — son
+  exactamente las mismas de `mtto_enviar_a_revision`.
+- Mientras llena, el borrador se guarda en el **localStorage del teléfono**,
+  para que no se pierda si se cierra el navegador o falla la señal. Se borra
+  al enviar con éxito.
+- La pantalla le muestra por adelantado qué le falta corregir, en vez de
+  dejarlo intentar y fallar.
+
+**Compromiso de seguridad que conviene tener presente:** para que el mecánico
+pueda subir fotos sin sesión, el rol `anon` tiene permiso de escritura en el
+bucket, pero **solo** bajo la carpeta de una orden que en ese momento tenga un
+enlace de diagnóstico vigente, sin usar y en borrador. Queda un riesgo
+residual: quien adivinara el UUID de esa orden podría subir archivos durante
+esa ventana. Se aceptó porque un UUID no es adivinable en la práctica y la
+alternativa —un servicio intermedio con `service_role`— exige desplegar una
+Edge Function. Si algún día se quiere cerrar del todo, ese es el camino.
+
 ## 3. Dar acceso al menú
 
 El menú lateral ya trae el grupo **"Mantenimiento"** con tres ítems:
@@ -96,6 +213,7 @@ igual que con cualquier otro módulo.
 | `/mantenimiento/:id/imprimir` | C — Vista imprimible (sin sidebar, `Ctrl+P` → Guardar como PDF) |
 | `/mantenimiento/historial` | D — Historial de costos y recurrencias por vehículo |
 | `/mantenimiento/vehiculos` | Alta y edición de la ficha de vehículos (solo admin del módulo) |
+| `/mantenimiento/personal` | Personas que firman con PIN sin tener cuenta (solo admin del módulo) |
 | `/mantenimiento/catalogo` | Administración de precios del catálogo (solo admin del módulo) |
 
 ## 5. Notas de diseño
