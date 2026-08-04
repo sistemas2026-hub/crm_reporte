@@ -531,6 +531,35 @@ export type Database = {
                     created_at?: string
                 }
             }
+            mtto_reparacion_foto: {
+                Row: {
+                    id: string
+                    reparacion_id: string
+                    path: string
+                    mime: string | null
+                    bytes: number | null
+                    subido_por: string
+                    created_at: string
+                }
+                Insert: {
+                    id?: string
+                    reparacion_id: string
+                    path: string
+                    mime?: string | null
+                    bytes?: number | null
+                    subido_por?: string
+                    created_at?: string
+                }
+                Update: {
+                    id?: string
+                    reparacion_id?: string
+                    path?: string
+                    mime?: string | null
+                    bytes?: number | null
+                    subido_por?: string
+                    created_at?: string
+                }
+            }
             mtto_orden_evento: {
                 Row: {
                     id: string

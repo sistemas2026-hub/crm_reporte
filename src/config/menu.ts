@@ -97,6 +97,7 @@ export const NAV_GROUPS: NavGroup[] = [
         items: [
             { id: 'mtto-hub', to: '/mantenimiento', icon: Wrench, label: 'Mantenimiento Vehicular' },
             { id: 'mtto-historial', to: '/mantenimiento/historial', icon: History, label: 'Historial por Vehículo' },
+            { id: 'mtto-vehiculos', to: '/mantenimiento/vehiculos', icon: Truck, label: 'Flota de Vehículos' },
             { id: 'mtto-catalogo', to: '/mantenimiento/catalogo', icon: Package, label: 'Catálogo de Precios (Mtto)' },
         ]
     },

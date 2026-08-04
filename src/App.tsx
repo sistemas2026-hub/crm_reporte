@@ -41,6 +41,7 @@ import { MaintenanceOrder } from './pages/MaintenanceOrder';
 import { MaintenanceOrderPrint } from './pages/MaintenanceOrderPrint';
 import { MaintenanceFleetHistory } from './pages/MaintenanceFleetHistory';
 import { MaintenanceCatalogAdmin } from './pages/MaintenanceCatalogAdmin';
+import { MaintenanceFleetAdmin } from './pages/MaintenanceFleetAdmin';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -168,6 +169,7 @@ function App() {
           <Route path="/mantenimiento" element={<MaintenanceHub />} />
           <Route path="/mantenimiento/historial" element={<MaintenanceFleetHistory />} />
           <Route path="/mantenimiento/catalogo" element={<MaintenanceCatalogAdmin />} />
+          <Route path="/mantenimiento/vehiculos" element={<MaintenanceFleetAdmin />} />
           <Route path="/mantenimiento/:id" element={<MaintenanceOrder />} />
           <Route path="/voice-ai" element={<VoiceCampaigns />} />
           <Route path="/pipeline" element={<Pipeline />} />

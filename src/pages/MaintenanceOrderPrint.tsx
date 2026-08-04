@@ -6,6 +6,7 @@ import {
     MttoService,
     type MttoOrden, type MttoVehiculo, type MttoOrdenHallazgo, type MttoOrdenFoto,
     type MttoOrdenReparacion, type ChecklistSeccionConItems, type MttoOrdenTotal, type MttoOrdenEvento,
+    type MttoReparacionFoto,
 } from '../lib/mttoService';
 import { ESTADO_LABEL, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money } from '../lib/mttoLabels';
 
@@ -19,7 +20,7 @@ export function MaintenanceOrderPrint() {
     const [orden, setOrden] = useState<OrdenConVehiculo | null>(null);
     const [checklist, setChecklist] = useState<ChecklistSeccionConItems[]>([]);
     const [hallazgos, setHallazgos] = useState<HallazgoConFotos[]>([]);
-    const [reparaciones, setReparaciones] = useState<MttoOrdenReparacion[]>([]);
+    const [reparaciones, setReparaciones] = useState<(MttoOrdenReparacion & { fotos?: MttoReparacionFoto[] })[]>([]);
     const [totales, setTotales] = useState<MttoOrdenTotal | null>(null);
     const [eventos, setEventos] = useState<(MttoOrdenEvento & { usuario?: Firmante })[]>([]);
     const [firmantes, setFirmantes] = useState<Record<string, Firmante>>({});
@@ -54,7 +55,10 @@ export function MaintenanceOrderPrint() {
                 }
 
                 // Precarga las URLs firmadas de todas las fotos para que la vista de impresión no quede con miniaturas vacías.
-                const todasLasFotos = hallazgosData.flatMap((h) => h.fotos || []);
+                const todasLasFotos = [
+                    ...hallazgosData.flatMap((h) => h.fotos || []),
+                    ...reparacionesData.flatMap((r) => r.fotos || []),
+                ];
                 const urls = await Promise.all(todasLasFotos.map(async (f) => [f.id, await MttoService.getFotoUrl(f.path).catch(() => '')] as const));
                 setFotoUrls(Object.fromEntries(urls));
             } finally {
@@ -170,7 +174,18 @@ export function MaintenanceOrderPrint() {
                         <tbody>
                             {reparaciones.map((r) => (
                                 <tr key={r.id} className="border-b border-border/40">
-                                    <td className="py-1 pr-2">{r.descripcion}</td>
+                                    <td className="py-1 pr-2">
+                                        {r.descripcion}
+                                        {(r.fotos || []).length > 0 && (
+                                            <div className="flex gap-1 mt-1 flex-wrap">
+                                                {(r.fotos || []).map((f) => (
+                                                    fotoUrls[f.id]
+                                                        ? <img key={f.id} src={fotoUrls[f.id]} alt="Repuesto" className="w-16 h-16 object-cover rounded border border-border" />
+                                                        : null
+                                                ))}
+                                            </div>
+                                        )}
+                                    </td>
                                     <td className="py-1 pr-2">{r.cantidad}</td>
                                     <td className="py-1 pr-2">{money(r.valor_unitario)}</td>
                                     <td className="py-1 pr-2">{money(r.mano_obra)}</td>

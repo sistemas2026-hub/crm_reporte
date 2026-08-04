@@ -44,10 +44,10 @@ organización actual automáticamente: toma la **primera fila** de
 No se inventó ningún dato de la empresa. Cárguelos cuando los tenga:
 
 - **Vehículos** (`mtto_vehiculo`): placa, número de motor, número de
-  chasis, vencimiento de SOAT y de tecnomecánica, responsable. Por ahora
-  solo se editan por SQL (`UPDATE mtto_vehiculo SET placa = '...' WHERE
-  codigo = 'MC-01';`); no había un requerimiento explícito de pantalla de
-  edición de ficha vehicular en el alcance original.
+  chasis, vencimiento de SOAT y de tecnomecánica, responsable. Se cargan
+  desde **Mantenimiento → Flota de Vehículos** (`/mantenimiento/vehiculos`),
+  donde también se crean vehículos nuevos. Solo visible/editable para el
+  rol admin del módulo.
 - **Precios de referencia** (`mtto_catalogo_arreglo`): se cargan desde la
   pantalla **Mantenimiento → Catálogo de Precios (Mtto)** en la app
   (`/mantenimiento/catalogo`), solo visible/editable para el rol admin del
@@ -95,6 +95,7 @@ igual que con cualquier otro módulo.
 | `/mantenimiento/:id` | B — Orden de trabajo (4 pasos) |
 | `/mantenimiento/:id/imprimir` | C — Vista imprimible (sin sidebar, `Ctrl+P` → Guardar como PDF) |
 | `/mantenimiento/historial` | D — Historial de costos y recurrencias por vehículo |
+| `/mantenimiento/vehiculos` | Alta y edición de la ficha de vehículos (solo admin del módulo) |
 | `/mantenimiento/catalogo` | Administración de precios del catálogo (solo admin del módulo) |
 
 ## 5. Notas de diseño

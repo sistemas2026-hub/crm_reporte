@@ -10,12 +10,14 @@ import {
     type MttoOrden, type MttoVehiculo, type MttoOrdenHallazgo, type MttoOrdenFoto,
     type MttoOrdenReparacion, type ChecklistSeccionConItems, type CatalogoSistemaConArreglos,
     type MttoOrdenEvento, type MttoChecklistItem, type MttoUsuarioRol,
+    type MttoReparacionFoto,
 } from '../lib/mttoService';
 import type { MttoEstadoHallazgo, MttoTipoServicio, MttoDecision, MttoPrioridad } from '../types/database';
 import { ESTADO_LABEL, ESTADO_COLOR, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money, toast } from '../lib/mttoLabels';
 
 type OrdenConVehiculo = MttoOrden & { vehiculo?: MttoVehiculo };
 type HallazgoConFotos = MttoOrdenHallazgo & { fotos?: MttoOrdenFoto[] };
+type ReparacionConFotos = MttoOrdenReparacion & { fotos?: MttoReparacionFoto[] };
 
 // ============================================================
 // Wrapper de bloqueo visual: opacidad + no-interactivo cuando el
@@ -51,7 +53,7 @@ export function MaintenanceOrder() {
     const [contexto, setContexto] = useState<{ userId: string | null; rol: string | null; esAdmin: boolean }>({ userId: null, rol: null, esAdmin: false });
     const [checklist, setChecklist] = useState<ChecklistSeccionConItems[]>([]);
     const [hallazgos, setHallazgos] = useState<HallazgoConFotos[]>([]);
-    const [reparaciones, setReparaciones] = useState<MttoOrdenReparacion[]>([]);
+    const [reparaciones, setReparaciones] = useState<ReparacionConFotos[]>([]);
     const [catalogo, setCatalogo] = useState<CatalogoSistemaConArreglos[]>([]);
     const [eventos, setEventos] = useState<(MttoOrdenEvento & { usuario?: { full_name: string | null } })[]>([]);
     const [tab, setTab] = useState<'vehiculo' | 'inspeccion' | 'reparaciones' | 'revision'>('vehiculo');
@@ -563,7 +565,7 @@ function ChecklistItemRow({ item, hallazgo, ordenId, puedoEditar, onCambio }: {
 function TabReparaciones({ ordenId, orden, reparaciones, catalogo, puedoEditar, motivoBloqueo, onCambio, onOrdenActualizada }: {
     ordenId: string;
     orden: MttoOrden;
-    reparaciones: MttoOrdenReparacion[];
+    reparaciones: ReparacionConFotos[];
     catalogo: CatalogoSistemaConArreglos[];
     puedoEditar: boolean;
     motivoBloqueo?: string;
@@ -637,7 +639,7 @@ function TabReparaciones({ ordenId, orden, reparaciones, catalogo, puedoEditar, 
                         <p className="text-sm text-muted-foreground text-center py-6">Sin reparaciones cotizadas todavía.</p>
                     )}
                     {reparaciones.map((r) => (
-                        <RepairLineCard key={r.id} reparacion={r} catalogo={catalogo} puedoEditar={puedoEditar} onCambio={onCambio} />
+                        <RepairLineCard key={r.id} ordenId={ordenId} reparacion={r} catalogo={catalogo} puedoEditar={puedoEditar} onCambio={onCambio} />
                     ))}
                 </div>
             </Bloqueado>
@@ -671,8 +673,9 @@ function TabReparaciones({ ordenId, orden, reparaciones, catalogo, puedoEditar, 
     );
 }
 
-function RepairLineCard({ reparacion, catalogo, puedoEditar, onCambio }: {
-    reparacion: MttoOrdenReparacion;
+function RepairLineCard({ ordenId, reparacion, catalogo, puedoEditar, onCambio }: {
+    ordenId: string;
+    reparacion: ReparacionConFotos;
     catalogo: CatalogoSistemaConArreglos[];
     puedoEditar: boolean;
     onCambio: () => void;
@@ -684,6 +687,47 @@ function RepairLineCard({ reparacion, catalogo, puedoEditar, onCambio }: {
     const [manoObra, setManoObra] = useState(reparacion.mano_obra.toString());
     const [prioridad, setPrioridad] = useState<MttoPrioridad>(reparacion.prioridad);
     const [buscador, setBuscador] = useState(false);
+    const [subiendoFoto, setSubiendoFoto] = useState(false);
+    const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
+    const fotoInputRef = useRef<HTMLInputElement>(null);
+
+    const fotos = reparacion.fotos || [];
+
+    // Carga las miniaturas (URLs firmadas: el bucket es privado)
+    useEffect(() => {
+        let cancelado = false;
+        (async () => {
+            for (const f of fotos) {
+                if (fotoUrls[f.id]) continue;
+                try {
+                    const url = await MttoService.getFotoUrl(f.path);
+                    if (!cancelado) setFotoUrls((prev) => ({ ...prev, [f.id]: url }));
+                } catch { /* si falla, la miniatura queda vacía */ }
+            }
+        })();
+        return () => { cancelado = true; };
+    }, [fotos.map((f) => f.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const subirFoto = async (file: File) => {
+        setSubiendoFoto(true);
+        try {
+            await MttoService.subirFotoReparacion(ordenId, reparacion.id, file);
+            onCambio();
+        } catch (e: any) {
+            toast('No se pudo subir la foto', 'error', e.message);
+        } finally {
+            setSubiendoFoto(false);
+        }
+    };
+
+    const borrarFoto = async (fotoId: string, path: string) => {
+        try {
+            await MttoService.eliminarFotoReparacion(fotoId, path);
+            onCambio();
+        } catch (e: any) {
+            toast('No se pudo eliminar la foto', 'error', e.message);
+        }
+    };
 
     const guardar = async (patch: Partial<MttoOrdenReparacion>) => {
         try {
@@ -780,6 +824,42 @@ function RepairLineCard({ reparacion, catalogo, puedoEditar, onCambio }: {
                     <div className="font-bold text-sm py-2">{money(total)}</div>
                 </Campo>
             </div>
+
+            {/* Fotos del repuesto — OPCIONALES. No confundir con las fotos de
+                hallazgo del checklist, que sí son obligatorias en ítems en M. */}
+            {(fotos.length > 0 || puedoEditar) && (
+                <div className="pt-2 border-t border-border/60">
+                    <div className="text-[11px] text-muted-foreground mb-1">
+                        Fotos del repuesto {fotos.length === 0 && '(opcional)'}
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {fotos.map((f) => (
+                            <div key={f.id} className="relative group">
+                                <div className="w-14 h-14 rounded-lg overflow-hidden border border-border bg-muted">
+                                    {fotoUrls[f.id]
+                                        ? <img src={fotoUrls[f.id]} alt="Repuesto" className="w-full h-full object-cover" />
+                                        : <div className="w-full h-full flex items-center justify-center"><Loader2 className="w-3 h-3 animate-spin text-muted-foreground" /></div>}
+                                </div>
+                                {puedoEditar && (
+                                    <button onClick={() => borrarFoto(f.id, f.path)}
+                                        title="Eliminar foto"
+                                        className="absolute -top-1.5 -right-1.5 bg-destructive text-destructive-foreground rounded-full w-5 h-5 flex items-center justify-center shadow">
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                        {puedoEditar && (
+                            <button onClick={() => fotoInputRef.current?.click()} disabled={subiendoFoto}
+                                className="w-14 h-14 rounded-lg border-2 border-dashed border-border text-muted-foreground flex items-center justify-center min-h-[44px]">
+                                {subiendoFoto ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-5 h-5" />}
+                            </button>
+                        )}
+                        <input ref={fotoInputRef} type="file" accept="image/*" capture="environment" className="hidden"
+                            onChange={(e) => { const f = e.target.files?.[0]; if (f) subirFoto(f); e.target.value = ''; }} />
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -835,7 +915,7 @@ function ArregloPicker({ catalogo, onElegir, onCerrar }: {
 // ============================================================
 function TabRevision({ orden, reparaciones, eventos, puedoRevisar, puedoAprobar, puedoDevolver, onCambio }: {
     orden: MttoOrden;
-    reparaciones: MttoOrdenReparacion[];
+    reparaciones: ReparacionConFotos[];
     eventos: (MttoOrdenEvento & { usuario?: { full_name: string | null } })[];
     puedoRevisar: boolean;
     puedoAprobar: boolean;

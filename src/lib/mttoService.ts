@@ -29,6 +29,7 @@ export type MttoOrden = Tables['mtto_orden']['Row'];
 export type MttoOrdenHallazgo = Tables['mtto_orden_hallazgo']['Row'];
 export type MttoOrdenFoto = Tables['mtto_orden_foto']['Row'];
 export type MttoOrdenReparacion = Tables['mtto_orden_reparacion']['Row'];
+export type MttoReparacionFoto = Tables['mtto_reparacion_foto']['Row'];
 export type MttoOrdenEvento = Tables['mtto_orden_evento']['Row'];
 export type MttoOrdenTotal = Database['public']['Views']['mtto_v_orden_total']['Row'];
 export type MttoOrdenResumen = Database['public']['Views']['mtto_v_orden_resumen']['Row'];
@@ -127,6 +128,19 @@ export const MttoService = {
 
     async updateVehiculo(id: string, payload: Tables['mtto_vehiculo']['Update']): Promise<MttoVehiculo> {
         const { data, error } = await supabase.from('mtto_vehiculo').update(payload).eq('id', id).select().single();
+        return ensure(data, error);
+    },
+
+    /**
+     * Personal de la organización, para asignar el responsable del vehículo.
+     * Se apoya en el RLS existente de profiles (solo devuelve los de la
+     * misma organización).
+     */
+    async listPerfiles(): Promise<{ id: string; full_name: string | null }[]> {
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('id, full_name')
+            .order('full_name');
         return ensure(data, error);
     },
 
@@ -324,9 +338,54 @@ export const MttoService = {
     // ================================================================
     // REPARACIONES (cotización)
     // ================================================================
-    async listReparaciones(ordenId: string): Promise<MttoOrdenReparacion[]> {
-        const { data, error } = await supabase.from('mtto_orden_reparacion').select('*').eq('orden_id', ordenId).order('created_at');
-        return ensure(data, error);
+    async listReparaciones(ordenId: string): Promise<(MttoOrdenReparacion & { fotos?: MttoReparacionFoto[] })[]> {
+        const { data, error } = await supabase
+            .from('mtto_orden_reparacion')
+            .select('*, fotos:mtto_reparacion_foto(*)')
+            .eq('orden_id', ordenId)
+            .order('created_at');
+        return ensure(data as any, error);
+    },
+
+    /**
+     * Foto OPCIONAL de una línea de cotización (ej. el repuesto dañado que
+     * se está cotizando). No confundir con subirFoto(), que cuelga de un
+     * hallazgo del checklist y sí es obligatoria en los ítems en M.
+     */
+    async subirFotoReparacion(ordenId: string, reparacionId: string, file: File | Blob, metadata?: ImageMetadata): Promise<MttoReparacionFoto> {
+        const comprimida = await compressImage(file, 1600, 0.7, metadata);
+        const path = `${ordenId}/${reparacionId}/${crypto.randomUUID()}.jpg`;
+
+        const { error: uploadError } = await supabase.storage
+            .from(BUCKET)
+            .upload(path, comprimida, { contentType: 'image/jpeg' });
+        if (uploadError) throw new Error(uploadError.message);
+
+        const { data: { user } } = await supabase.auth.getUser();
+        const { data, error } = await supabase
+            .from('mtto_reparacion_foto')
+            .insert({
+                reparacion_id: reparacionId,
+                path,
+                mime: 'image/jpeg',
+                bytes: comprimida.size,
+                subido_por: user?.id,
+            })
+            .select()
+            .single();
+
+        if (error) {
+            await supabase.storage.from(BUCKET).remove([path]);
+            throw new Error(error.message);
+        }
+        return data;
+    },
+
+    async eliminarFotoReparacion(fotoId: string, path: string): Promise<void> {
+        const { error: storageError } = await supabase.storage.from(BUCKET).remove([path]);
+        if (storageError) throw new Error(storageError.message);
+        const { error } = await supabase.from('mtto_reparacion_foto').delete().eq('id', fotoId);
+        if (error) throw new Error(error.message);
     },
 
     async crearReparacion(payload: Tables['mtto_orden_reparacion']['Insert']): Promise<MttoOrdenReparacion> {
