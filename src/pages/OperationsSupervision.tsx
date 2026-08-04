@@ -194,6 +194,32 @@ export function OperationsSupervision() {
         return () => { supabase.removeChannel(channel); };
     }, []);
 
+    // ── Radar: detecta tickets nuevos en WispHub y los sube a Supabase
+    // El WebSocket de arriba los recoge automáticamente sin recargar la página
+    useEffect(() => {
+        let isMounted = true;
+
+        const runRadar = async () => {
+            if (!isMounted || !navigator.onLine) return;
+            try {
+                await WorkflowService.radarSyncToday();
+            } catch {
+                // silencioso — no interrumpir la vista si falla
+            }
+        };
+
+        // Escaneo inmediato al abrir la sección
+        runRadar();
+
+        // Luego cada 2 minutos
+        const interval = setInterval(runRadar, 2 * 60 * 1000);
+
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, []);
+
     // ── Alerta sonora cuando un ticket llega al 100% de SLA
     useEffect(() => {
         if (processes.length === 0 || Object.keys(slaMap).length === 0) return;
