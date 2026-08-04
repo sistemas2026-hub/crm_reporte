@@ -120,7 +120,7 @@ REVOKE SELECT (pin_hash) ON public.mtto_firmante FROM authenticated, anon;
 -- El admin asigna el PIN inicial (queda marcado como definido por admin)
 CREATE OR REPLACE FUNCTION public.mtto_asignar_pin_firmante(p_firmante_id uuid, p_pin text)
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 BEGIN
     IF NOT public.mtto_es_admin_modulo() THEN
@@ -147,7 +147,7 @@ $$;
 -- solo ella lo conoce (pin_definido_por_admin queda en false).
 CREATE OR REPLACE FUNCTION public.mtto_cambiar_pin_firmante(p_firmante_id uuid, p_pin_actual text, p_pin_nuevo text)
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 BEGIN
     IF auth.uid() IS NULL THEN
@@ -172,7 +172,7 @@ $$;
 -- No se expone al cliente: solo la usan las funciones de firma.
 CREATE OR REPLACE FUNCTION public.mtto_validar_pin_firmante(p_firmante_id uuid, p_pin text)
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_hash text;
@@ -214,7 +214,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.mtto_revisar_orden_firmante(p_orden_id uuid, p_firmante_id uuid, p_pin text, p_obs text)
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_estado public.mtto_estado_orden;
@@ -266,7 +266,7 @@ CREATE OR REPLACE FUNCTION public.mtto_aprobar_orden_firmante(
     p_lineas_autorizadas uuid[] DEFAULT NULL
 )
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_estado public.mtto_estado_orden;

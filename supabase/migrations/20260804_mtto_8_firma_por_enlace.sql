@@ -70,7 +70,7 @@ CREATE OR REPLACE FUNCTION public.mtto_generar_token_firma(
     p_horas int DEFAULT 48
 )
 RETURNS text
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_secreto text;
@@ -121,7 +121,7 @@ $$;
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.mtto_resolver_token(p_token text)
 RETURNS public.mtto_firma_token
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_partes text[];
@@ -165,7 +165,7 @@ $$;
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.mtto_ver_orden_por_token(p_token text)
 RETURNS jsonb
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_tok public.mtto_firma_token;
@@ -236,7 +236,7 @@ CREATE OR REPLACE FUNCTION public.mtto_firmar_por_token(
     p_lineas_autorizadas uuid[] DEFAULT NULL
 )
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_tok public.mtto_firma_token;

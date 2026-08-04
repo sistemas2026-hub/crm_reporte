@@ -54,7 +54,7 @@ CREATE OR REPLACE FUNCTION public.mtto_configurar_pin(p_pin text)
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
     IF auth.uid() IS NULL THEN
@@ -88,7 +88,7 @@ CREATE OR REPLACE FUNCTION public.mtto_validar_pin(p_usuario_id uuid, p_pin text
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_hash text;
@@ -130,7 +130,7 @@ CREATE OR REPLACE FUNCTION public.mtto_revisar_orden_pin(p_orden_id uuid, p_usua
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_estado public.mtto_estado_orden;
@@ -177,7 +177,7 @@ CREATE OR REPLACE FUNCTION public.mtto_aprobar_orden_pin(
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_estado       public.mtto_estado_orden;

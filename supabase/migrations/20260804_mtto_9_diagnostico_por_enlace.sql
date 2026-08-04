@@ -34,7 +34,7 @@ CREATE OR REPLACE FUNCTION public.mtto_generar_token_firma(
     p_horas int DEFAULT 48
 )
 RETURNS text
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_secreto text;
@@ -87,7 +87,7 @@ $$;
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.mtto_ver_diagnostico_por_token(p_token text)
 RETURNS jsonb
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_tok public.mtto_firma_token;
@@ -173,7 +173,7 @@ CREATE OR REPLACE FUNCTION public.mtto_guardar_diagnostico_por_token(
     p_iva_tasa numeric DEFAULT NULL
 )
 RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions
 AS $$
 DECLARE
     v_tok public.mtto_firma_token;
