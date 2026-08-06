@@ -195,6 +195,42 @@ esa ventana. Se aceptó porque un UUID no es adivinable en la práctica y la
 alternativa —un servicio intermedio con `service_role`— exige desplegar una
 Edge Function. Si algún día se quiere cerrar del todo, ese es el camino.
 
+## 2e. Vida útil de los repuestos
+
+Cada arreglo del catálogo puede declarar cuánto dura lo que se instala, en
+**kilómetros**, en **meses**, o en ambos (vence el que ocurra primero). Se
+carga en *Catálogo de Precios*, junto a los precios de referencia:
+
+| Arreglo | Km | Meses |
+|---|---|---|
+| Cambio de aceite de motor | 3.000 | 3 |
+| Cambio de pastillas de freno delantero | 8.000 | — |
+| Cambio de batería | — | 18 |
+| Diagnóstico general | — | — |
+
+Se deja vacío en lo que no es cambio de pieza: un diagnóstico o una soldadura
+no vencen.
+
+**Cuándo empieza a contar:** al **cerrar la orden**, que es cuando el trabajo
+está hecho de verdad. En ese momento `mtto_cerrar_orden` registra en
+`mtto_componente_instalado`, por cada reparación **autorizada** cuyo arreglo
+tenga vida útil, qué se instaló, en qué vehículo, en qué fecha, con qué
+kilometraje, y cuándo vence. También actualiza `mtto_vehiculo.km_actual`.
+
+**Dónde se ve:** en *Historial por Vehículo* aparece el bloque "Vida útil de
+los repuestos" con el último cambio de cada pieza y su estado — vigente, por
+vencer o vencido. Si una pieza se vuelve a cambiar, el contador se reinicia:
+la vista `mtto_v_componente_estado` solo considera la instalación más
+reciente de cada arreglo por vehículo.
+
+**LIMITACIÓN IMPORTANTE:** el sistema solo conoce el kilometraje **cuando
+entra una orden**. Si un vehículo no vuelve al taller en meses, sigue
+creyendo que tiene los km de la última visita, así que **las alertas por
+kilometraje llegarán tarde**. Se aceptó a propósito para no imponerle a nadie
+un registro periódico de odómetro. Las alertas **por tiempo sí son exactas
+siempre**. Si más adelante se quiere precisión en las de km, hay que agregar
+una pantalla donde el supervisor anote el kilometraje cada semana.
+
 ## 3. Dar acceso al menú
 
 El menú lateral ya trae el grupo **"Mantenimiento"** con tres ítems:

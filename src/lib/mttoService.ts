@@ -49,6 +49,7 @@ export type MttoEventoConAutor = MttoOrdenEvento & {
 export type MttoOrdenTotal = Database['public']['Views']['mtto_v_orden_total']['Row'];
 export type MttoOrdenResumen = Database['public']['Views']['mtto_v_orden_resumen']['Row'];
 export type MttoCostoVehiculo = Database['public']['Views']['mtto_v_costo_vehiculo']['Row'];
+export type MttoComponenteEstado = Database['public']['Views']['mtto_v_componente_estado']['Row'];
 
 export type ChecklistSeccionConItems = MttoChecklistSeccion & { items: MttoChecklistItem[] };
 export type CatalogoSistemaConArreglos = MttoCatalogoSistema & { arreglos: MttoCatalogoArreglo[] };
@@ -477,6 +478,18 @@ export const MttoService = {
 
     async getCostosPorVehiculo(vehiculoId?: string): Promise<MttoCostoVehiculo[]> {
         let query = supabase.from('mtto_v_costo_vehiculo').select('*').order('mes', { ascending: false });
+        if (vehiculoId) query = query.eq('vehiculo_id', vehiculoId);
+        const { data, error } = await query;
+        return ensure(data, error);
+    },
+
+    /**
+     * Estado de vida útil de los repuestos instalados en un vehículo.
+     * Solo aparece la instalación más reciente de cada arreglo: si la pieza
+     * se volvió a cambiar, el contador se reinició.
+     */
+    async getEstadoComponentes(vehiculoId?: string): Promise<MttoComponenteEstado[]> {
+        let query = supabase.from('mtto_v_componente_estado').select('*');
         if (vehiculoId) query = query.eq('vehiculo_id', vehiculoId);
         const { data, error } = await query;
         return ensure(data, error);

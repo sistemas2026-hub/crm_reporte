@@ -78,6 +78,12 @@ export function MaintenanceCatalogAdmin() {
                 {sinPrecio > 0 ? `${sinPrecio} arreglo(s) todavía sin precio cargado.` : 'Todos los arreglos tienen precio de referencia.'}
             </p>
 
+            <div className="mb-4 text-xs text-muted-foreground bg-muted/40 border border-border rounded-lg px-3 py-2 leading-relaxed">
+                <strong>Vida útil:</strong> cuánto dura el repuesto que se instala, en kilómetros y/o
+                meses. Al cerrar una orden, el sistema anota qué se cambió y avisa cuando toque
+                reemplazarlo. Déjelo vacío en lo que no es cambio de pieza (diagnósticos, soldaduras).
+            </div>
+
             {!esAdmin && (
                 <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground bg-muted/60 rounded-lg px-3 py-2">
                     <Lock className="w-4 h-4 shrink-0" /> Solo lectura — se requiere rol de administrador del módulo para editar precios.
@@ -209,6 +215,8 @@ function NuevoArregloRow({ sistemaId, onCreado }: { sistemaId: string; onCreado:
 function ArregloRow({ arreglo, puedeEditar, onGuardado }: { arreglo: CatalogoSistemaConArreglos['arreglos'][number]; puedeEditar: boolean; onGuardado: () => void }) {
     const [precioRepuesto, setPrecioRepuesto] = useState(arreglo.precio_repuesto_ref?.toString() ?? '');
     const [precioMo, setPrecioMo] = useState(arreglo.precio_mo_ref?.toString() ?? '');
+    const [vidaKm, setVidaKm] = useState(arreglo.vida_util_km?.toString() ?? '');
+    const [vidaMeses, setVidaMeses] = useState(arreglo.vida_util_meses?.toString() ?? '');
     const [guardando, setGuardando] = useState(false);
 
     const guardar = async () => {
@@ -218,6 +226,8 @@ function ArregloRow({ arreglo, puedeEditar, onGuardado }: { arreglo: CatalogoSis
             await MttoService.updateArreglo(arreglo.id, {
                 precio_repuesto_ref: precioRepuesto === '' ? null : Number(precioRepuesto),
                 precio_mo_ref: precioMo === '' ? null : Number(precioMo),
+                vida_util_km: vidaKm === '' ? null : Number(vidaKm),
+                vida_util_meses: vidaMeses === '' ? null : Number(vidaMeses),
             });
             onGuardado();
         } catch (e: any) {
@@ -240,6 +250,16 @@ function ArregloRow({ arreglo, puedeEditar, onGuardado }: { arreglo: CatalogoSis
                     <label className="text-[10px] text-muted-foreground block">Mano de obra</label>
                     <input type="number" value={precioMo} disabled={!puedeEditar} onChange={(e) => setPrecioMo(e.target.value)} onBlur={guardar}
                         className="w-28 border border-border rounded-lg px-2 py-1.5 bg-background text-sm min-h-[36px] disabled:opacity-60" placeholder="COP" />
+                </div>
+                <div>
+                    <label className="text-[10px] text-muted-foreground block">Dura (km)</label>
+                    <input type="number" value={vidaKm} disabled={!puedeEditar} onChange={(e) => setVidaKm(e.target.value)} onBlur={guardar}
+                        className="w-24 border border-border rounded-lg px-2 py-1.5 bg-background text-sm min-h-[36px] disabled:opacity-60" placeholder="—" />
+                </div>
+                <div>
+                    <label className="text-[10px] text-muted-foreground block">Dura (meses)</label>
+                    <input type="number" value={vidaMeses} disabled={!puedeEditar} onChange={(e) => setVidaMeses(e.target.value)} onBlur={guardar}
+                        className="w-24 border border-border rounded-lg px-2 py-1.5 bg-background text-sm min-h-[36px] disabled:opacity-60" placeholder="—" />
                 </div>
                 {guardando && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
             </div>

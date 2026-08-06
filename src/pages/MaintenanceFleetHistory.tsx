@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { AlertTriangle, Loader2, History, Repeat2 } from 'lucide-react';
+import { AlertTriangle, Loader2, History, Repeat2, Timer } from 'lucide-react';
 import clsx from 'clsx';
-import { MttoService, type MttoVehiculo, type MttoCostoVehiculo } from '../lib/mttoService';
+import { MttoService, type MttoVehiculo, type MttoCostoVehiculo, type MttoComponenteEstado } from '../lib/mttoService';
 import { money } from '../lib/mttoLabels';
 
 const diasParaVencer = (fecha: string | null): number | null => {
@@ -16,6 +16,7 @@ export function MaintenanceFleetHistory() {
     const [seleccionado, setSeleccionado] = useState<string>('');
     const [costos, setCostos] = useState<MttoCostoVehiculo[]>([]);
     const [frecuentes, setFrecuentes] = useState<{ descripcion: string; veces: number }[]>([]);
+    const [componentes, setComponentes] = useState<MttoComponenteEstado[]>([]);
     const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
     useEffect(() => {
@@ -36,12 +37,14 @@ export function MaintenanceFleetHistory() {
         (async () => {
             setCargandoDetalle(true);
             try {
-                const [c, f] = await Promise.all([
+                const [c, f, comp] = await Promise.all([
                     MttoService.getCostosPorVehiculo(seleccionado),
                     MttoService.getReparacionesFrecuentes(seleccionado),
+                    MttoService.getEstadoComponentes(seleccionado).catch(() => []),
                 ]);
                 setCostos(c);
                 setFrecuentes(f);
+                setComponentes(comp);
             } finally {
                 setCargandoDetalle(false);
             }
@@ -144,6 +147,47 @@ export function MaintenanceFleetHistory() {
                                             <div key={anio}>
                                                 <div className="text-xs text-muted-foreground">{anio}</div>
                                                 <div className="font-bold">{money(total)}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {componentes.length > 0 && (
+                                <div className="bg-card border border-border rounded-xl p-4 mb-4">
+                                    <h3 className="font-bold text-sm mb-1 flex items-center gap-2"><Timer className="w-4 h-4" /> Vida útil de los repuestos</h3>
+                                    <p className="text-xs text-muted-foreground mb-3">
+                                        Último cambio de cada pieza y cuándo toca reemplazarla.
+                                        {vehiculo?.km_actual != null && ` Kilometraje conocido: ${vehiculo.km_actual.toLocaleString('es-CO')} km`}
+                                        {vehiculo?.km_actualizado && ` (al ${new Date(vehiculo.km_actualizado).toLocaleDateString('es-CO')})`}
+                                    </p>
+                                    <div className="space-y-1.5">
+                                        {[...componentes]
+                                            .sort((a, b) => Number(b.vencido) - Number(a.vencido) || Number(b.por_vencer) - Number(a.por_vencer))
+                                            .map((c) => (
+                                            <div key={c.id} className={clsx('flex justify-between items-start gap-2 text-sm border-b border-border/40 pb-1.5 last:border-0',
+                                                c.vencido && 'text-red-600 dark:text-red-400')}>
+                                                <div className="flex-1">
+                                                    <div className="font-medium">{c.descripcion}</div>
+                                                    <div className="text-xs text-muted-foreground">
+                                                        Cambiado el {new Date(c.instalado_el).toLocaleDateString('es-CO')}
+                                                        {c.instalado_km != null && ` · ${c.instalado_km.toLocaleString('es-CO')} km`}
+                                                    </div>
+                                                </div>
+                                                <div className="text-right text-xs whitespace-nowrap">
+                                                    {c.vencido ? (
+                                                        <span className="font-bold flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Vencido</span>
+                                                    ) : c.por_vencer ? (
+                                                        <span className="font-semibold text-amber-600 dark:text-amber-400">Por vencer</span>
+                                                    ) : (
+                                                        <span className="text-muted-foreground">Vigente</span>
+                                                    )}
+                                                    <div className="text-muted-foreground">
+                                                        {c.dias_restantes != null && `${c.dias_restantes} d`}
+                                                        {c.dias_restantes != null && c.km_restantes != null && ' · '}
+                                                        {c.km_restantes != null && `${c.km_restantes.toLocaleString('es-CO')} km`}
+                                                    </div>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>

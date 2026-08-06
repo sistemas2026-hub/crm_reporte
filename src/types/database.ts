@@ -212,6 +212,8 @@ export type Database = {
                     soat_vence: string | null
                     tecno_vence: string | null
                     responsable_id: string | null
+                    km_actual: number | null
+                    km_actualizado: string | null
                     activo: boolean
                     created_at: string
                 }
@@ -325,6 +327,8 @@ export type Database = {
                     nombre: string
                     precio_repuesto_ref: number | null
                     precio_mo_ref: number | null
+                    vida_util_km: number | null
+                    vida_util_meses: number | null
                     activo: boolean
                 }
                 Insert: {
@@ -333,6 +337,8 @@ export type Database = {
                     nombre: string
                     precio_repuesto_ref?: number | null
                     precio_mo_ref?: number | null
+                    vida_util_km?: number | null
+                    vida_util_meses?: number | null
                     activo?: boolean
                 }
                 Update: {
@@ -341,6 +347,8 @@ export type Database = {
                     nombre?: string
                     precio_repuesto_ref?: number | null
                     precio_mo_ref?: number | null
+                    vida_util_km?: number | null
+                    vida_util_meses?: number | null
                     activo?: boolean
                 }
             }
@@ -653,6 +661,25 @@ export type Database = {
                     malo: number
                     no_aplica: number
                     tiene_critico_malo: boolean | null
+                }
+            }
+            mtto_v_componente_estado: {
+                Row: {
+                    id: string
+                    vehiculo_id: string
+                    vehiculo: string
+                    arreglo_id: string
+                    descripcion: string
+                    repuesto: string | null
+                    instalado_el: string
+                    instalado_km: number | null
+                    vence_el: string | null
+                    vence_km: number | null
+                    km_actual: number | null
+                    dias_restantes: number | null
+                    km_restantes: number | null
+                    vencido: boolean
+                    por_vencer: boolean
                 }
             }
             mtto_v_costo_vehiculo: {
