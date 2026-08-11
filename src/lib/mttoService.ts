@@ -678,7 +678,12 @@ export const MttoService = {
         ];
 
         const fotos: Record<string, string> = {};
-        const expiraSegundos = (params.horas ?? 48) * 3600;
+        // horas <= 0 significa "sin vencimiento" para el enlace. Las URLs
+        // firmadas de storage sí necesitan un número finito, así que en ese
+        // caso se usa el máximo práctico: un año.
+        const UN_ANIO = 365 * 24 * 3600;
+        const horas = params.horas ?? 48;
+        const expiraSegundos = horas <= 0 ? UN_ANIO : Math.min(horas * 3600, UN_ANIO);
         await Promise.all(paths.map(async (p) => {
             try {
                 const { data } = await supabase.storage.from(BUCKET).createSignedUrl(p, expiraSegundos);
@@ -692,7 +697,7 @@ export const MttoService = {
             p_firmante_id: params.firmanteId ?? null,
             p_usuario_id: params.usuarioId ?? null,
             p_fotos: fotos,
-            p_horas: params.horas ?? 48,
+            p_horas: horas,
         });
         if (error) throw new Error(error.message);
         const ruta = params.accion === 'diagnosticar' ? 'diagnosticar' : 'firmar';

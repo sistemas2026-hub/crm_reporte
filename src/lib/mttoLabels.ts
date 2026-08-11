@@ -42,6 +42,16 @@ export const EVENTO_LABEL: Record<string, string> = {
 export const money = (n: number | null | undefined) =>
     new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 
+/**
+ * Un enlace sin vencimiento se guarda como 'infinity' en Postgres, que en JS
+ * produce una fecha inválida. Devuelve null en ese caso.
+ */
+export const fechaVencimiento = (valor?: string | null): Date | null => {
+    if (!valor || valor === 'infinity') return null;
+    const d = new Date(valor);
+    return isNaN(d.getTime()) ? null : d;
+};
+
 export const toast = (message: string, type: 'success' | 'error' | 'info' = 'info', description?: string) => {
     window.dispatchEvent(new CustomEvent('app:toast', { detail: { message, type, description, duration: 4000 } }));
 };

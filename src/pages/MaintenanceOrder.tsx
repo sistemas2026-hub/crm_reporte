@@ -1274,6 +1274,9 @@ function EnlaceFirma({ ordenId, accion, candidatos }: {
     const [destinatario, setDestinatario] = useState('');
     const [generando, setGenerando] = useState(false);
     const [enlace, setEnlace] = useState('');
+    // El diagnóstico se toma en el taller y puede demorar días, así que por
+    // defecto dura más que los enlaces de firma.
+    const [horas, setHoras] = useState(accion === 'diagnosticar' ? 720 : 48);
 
     const generar = async () => {
         if (!destinatario) { toast('Seleccione a quién va dirigido', 'error'); return; }
@@ -1285,6 +1288,7 @@ function EnlaceFirma({ ordenId, accion, candidatos }: {
                 accion,
                 firmanteId: tipo === 'firmante' ? id : undefined,
                 usuarioId: tipo === 'usuario' ? id : undefined,
+                horas,
             });
             setEnlace(url);
         } catch (e: any) {
@@ -1323,6 +1327,22 @@ function EnlaceFirma({ ordenId, accion, candidatos }: {
                             </option>
                         ))}
                     </select>
+                    <div>
+                        <label className="text-xs text-muted-foreground block mb-1">¿Cuánto debe durar el enlace?</label>
+                        <select value={horas} onChange={(e) => setHoras(Number(e.target.value))}
+                            className="w-full border border-border rounded-lg px-3 py-2.5 bg-background text-sm min-h-[44px]">
+                            <option value={48}>2 días</option>
+                            <option value={168}>1 semana</option>
+                            <option value={720}>1 mes</option>
+                            <option value={2160}>3 meses</option>
+                            <option value={0}>Sin vencimiento</option>
+                        </select>
+                        {horas === 0 && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                El enlace seguirá sirviendo hasta que se use o se genere otro.
+                            </p>
+                        )}
+                    </div>
                     <div className="flex gap-2">
                         <button onClick={generar} disabled={generando || !destinatario}
                             className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-lg font-semibold min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">

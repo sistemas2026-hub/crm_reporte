@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { MttoService } from '../lib/mttoService';
-import { money, TIPO_SERVICIO_LABEL } from '../lib/mttoLabels';
+import { money, TIPO_SERVICIO_LABEL, fechaVencimiento } from '../lib/mttoLabels';
 
 /**
  * Pantalla PÚBLICA de diagnóstico por enlace. La usa el mecánico, que no
@@ -259,7 +259,9 @@ export function MaintenanceDiagnoseByLink() {
 
             <p className="text-xs text-muted-foreground text-center py-6">
                 Su avance se guarda solo en este teléfono hasta que envíe.
-                El enlace vence el {new Date(datos.expira_at).toLocaleString('es-CO')}.
+                {fechaVencimiento(datos.expira_at)
+                    ? ` El enlace vence el ${fechaVencimiento(datos.expira_at)!.toLocaleString('es-CO')}.`
+                    : ' El enlace no tiene fecha de vencimiento.'}
             </p>
         </Marco>
     );

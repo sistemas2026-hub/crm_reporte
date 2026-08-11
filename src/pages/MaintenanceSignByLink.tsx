@@ -6,7 +6,7 @@ import {
 import clsx from 'clsx';
 import { MttoService } from '../lib/mttoService';
 import type { MttoDecision } from '../types/database';
-import { money, TIPO_SERVICIO_LABEL } from '../lib/mttoLabels';
+import { money, TIPO_SERVICIO_LABEL, fechaVencimiento } from '../lib/mttoLabels';
 
 /**
  * Pantalla PÚBLICA de firma por enlace. No requiere sesión.
@@ -268,8 +268,10 @@ export function MaintenanceSignByLink() {
             </div>
 
             <p className="text-xs text-muted-foreground text-center pb-6">
-                Este enlace es de un solo uso y vence el{' '}
-                {new Date(datos.expira_at).toLocaleString('es-CO')}.
+                Este enlace es de un solo uso
+                {fechaVencimiento(datos.expira_at)
+                    ? ` y vence el ${fechaVencimiento(datos.expira_at)!.toLocaleString('es-CO')}.`
+                    : ' y no tiene fecha de vencimiento.'}
             </p>
         </Marco>
     );
