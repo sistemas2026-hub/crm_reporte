@@ -73,6 +73,13 @@ COMMENT ON COLUMN public.mtto_orden_hallazgo.es_recomendacion IS
 -- aplicables menos los que están en R/M/NA. Las filas en 'B' no
 -- entran en ese filtro, así que un ítem bueno con observación se
 -- sigue contando como bueno, que es lo correcto.
+--
+-- OJO: CREATE OR REPLACE VIEW solo deja AGREGAR columnas AL FINAL.
+-- Si se mete una nueva en medio, Postgres cree que se está
+-- renombrando la que estaba en esa posición y falla con
+--   "cannot change name of view column ... to ..."
+-- Por eso 'recomendaciones' va de última, después de
+-- tiene_critico_malo, aunque agrupada quedaría mejor arriba.
 -- ------------------------------------------------------------
 CREATE OR REPLACE VIEW public.mtto_v_orden_resumen
 WITH (security_invoker = on) AS
@@ -91,8 +98,8 @@ SELECT
     COUNT(h.id) FILTER (WHERE h.estado = 'R')  AS regular,
     COUNT(h.id) FILTER (WHERE h.estado = 'M')  AS malo,
     COUNT(h.id) FILTER (WHERE h.estado = 'NA') AS no_aplica,
-    COUNT(h.id) FILTER (WHERE h.es_recomendacion) AS recomendaciones,
-    bool_or(h.estado = 'M' AND ci2.critico) AS tiene_critico_malo
+    bool_or(h.estado = 'M' AND ci2.critico) AS tiene_critico_malo,
+    COUNT(h.id) FILTER (WHERE h.es_recomendacion) AS recomendaciones
 FROM public.mtto_orden o
 JOIN public.mtto_vehiculo v ON v.id = o.vehiculo_id
 LEFT JOIN public.mtto_orden_hallazgo h ON h.orden_id = o.id

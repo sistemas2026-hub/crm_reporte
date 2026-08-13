@@ -663,8 +663,8 @@ export type Database = {
                     regular: number
                     malo: number
                     no_aplica: number
-                    recomendaciones: number
                     tiene_critico_malo: boolean | null
+                    recomendaciones: number
                 }
             }
             mtto_v_componente_estado: {
