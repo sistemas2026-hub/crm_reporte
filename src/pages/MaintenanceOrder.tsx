@@ -259,15 +259,50 @@ function TabVehiculo({ orden, puedoEditar, onGuardado, mecanicos }: {
     orden: OrdenConVehiculo; puedoEditar: boolean; onGuardado: () => void; mecanicos: Candidato[];
 }) {
     const v = orden.vehiculo!;
+    const [vehiculoId, setVehiculoId] = useState(orden.vehiculo_id);
+    const [vehiculos, setVehiculos] = useState<MttoVehiculo[]>([]);
     const [kilometraje, setKilometraje] = useState(orden.kilometraje?.toString() || '');
     const [tipoServicio, setTipoServicio] = useState<MttoTipoServicio>(orden.tipo_servicio);
     const [taller, setTaller] = useState(orden.taller || '');
     const [motivo, setMotivo] = useState(orden.motivo || '');
     const [guardando, setGuardando] = useState(false);
 
+    useEffect(() => {
+        if (puedoEditar) MttoService.listVehiculos().then(setVehiculos).catch(() => {});
+    }, [puedoEditar]);
+
+    const nuevoVehiculo = vehiculos.find((x) => x.id === vehiculoId);
+    const cambiaTipo = !!nuevoVehiculo && nuevoVehiculo.tipo !== v.tipo;
+
     const guardar = async () => {
+        // Cambiar de tipo de vehículo cambia el checklist aplicable: la sección
+        // de tráiler solo va en moto con tráiler. Los hallazgos de ítems que
+        // dejan de aplicar quedarían huérfanos, así que se avisa y se limpian.
+        if (cambiaTipo) {
+            const ok = window.confirm(
+                'El vehículo nuevo es de otro tipo, así que le aplica un checklist distinto. ' +
+                'Los hallazgos de ítems que ya no apliquen se van a eliminar. ¿Continuar?'
+            );
+            if (!ok) return;
+        }
+
         setGuardando(true);
         try {
+            if (vehiculoId !== orden.vehiculo_id) {
+                await MttoService.updateOrden(orden.id, { vehiculo_id: vehiculoId });
+
+                if (cambiaTipo) {
+                    const [checklistNuevo, hallazgos] = await Promise.all([
+                        MttoService.getChecklist(nuevoVehiculo!.tipo),
+                        MttoService.listHallazgos(orden.id),
+                    ]);
+                    const aplicables = new Set(checklistNuevo.flatMap((sec) => sec.items.map((i) => i.id)));
+                    for (const h of hallazgos) {
+                        if (!aplicables.has(h.item_id)) await MttoService.marcarBueno(orden.id, h.item_id);
+                    }
+                }
+            }
+
             await MttoService.updateOrden(orden.id, {
                 kilometraje: kilometraje ? Number(kilometraje) : null,
                 tipo_servicio: tipoServicio,
@@ -313,6 +348,26 @@ function TabVehiculo({ orden, puedoEditar, onGuardado, mecanicos }: {
 
             <Bloqueado activo={puedoEditar} motivo={!puedoEditar ? 'Solo editable en borrador por el mecánico creador.' : undefined}>
                 <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                    <div>
+                        <label className="text-sm font-medium block mb-1">Vehículo</label>
+                        <select value={vehiculoId} onChange={(e) => setVehiculoId(e.target.value)}
+                            className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px]">
+                            {/* Si el actual está inactivo no vendría en la lista: se agrega para no perderlo */}
+                            {!vehiculos.some((x) => x.id === orden.vehiculo_id) && (
+                                <option value={orden.vehiculo_id}>{v.codigo}{v.placa ? ` — ${v.placa}` : ''}</option>
+                            )}
+                            {vehiculos.map((x) => (
+                                <option key={x.id} value={x.id}>
+                                    {x.codigo}{x.placa ? ` — ${x.placa}` : ''} · {x.tipo === 'motocarro' ? 'Motocarro' : 'Moto con tráiler'}
+                                </option>
+                            ))}
+                        </select>
+                        {cambiaTipo && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                Es de otro tipo: al guardar se eliminarán los hallazgos de ítems que ya no apliquen.
+                            </p>
+                        )}
+                    </div>
                     <div>
                         <label className="text-sm font-medium block mb-1">Kilometraje</label>
                         <input type="number" value={kilometraje} onChange={(e) => setKilometraje(e.target.value)}
