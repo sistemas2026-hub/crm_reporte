@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Truck, Plus, X, Loader2, Lock, AlertTriangle, Pencil } from 'lucide-react';
+import { Truck, Plus, X, Loader2, Lock, AlertTriangle, Pencil, History, Search } from 'lucide-react';
 import clsx from 'clsx';
-import { MttoService, type MttoVehiculo } from '../lib/mttoService';
+import { MttoService, type MttoVehiculo, type CatalogoSistemaConArreglos } from '../lib/mttoService';
 import type { MttoTipoVehiculo } from '../types/database';
 import { toast } from '../lib/mttoLabels';
 
@@ -77,17 +77,30 @@ export function MaintenanceFleetAdmin() {
     const [guardando, setGuardando] = useState(false);
     const [error, setError] = useState('');
 
+    // Registro de cambios hechos antes o fuera del sistema
+    const [modalCambio, setModalCambio] = useState<MttoVehiculo | null>(null);
+    const [catalogo, setCatalogo] = useState<CatalogoSistemaConArreglos[]>([]);
+    const [arregloId, setArregloId] = useState('');
+    const [buscarArreglo, setBuscarArreglo] = useState('');
+    const [fechaCambio, setFechaCambio] = useState('');
+    const [kmCambio, setKmCambio] = useState('');
+    const [notaCambio, setNotaCambio] = useState('');
+    const [guardandoCambio, setGuardandoCambio] = useState(false);
+    const [errorCambio, setErrorCambio] = useState('');
+
     const cargar = async () => {
         setLoading(true);
         try {
-            const [ctx, vs, ps] = await Promise.all([
+            const [ctx, vs, ps, cat] = await Promise.all([
                 MttoService.getMiContexto(),
                 MttoService.listVehiculos(false), // incluye inactivos
                 MttoService.listPerfiles().catch(() => []),
+                MttoService.getCatalogo().catch(() => []),
             ]);
             setEsAdmin(ctx.esAdmin);
             setVehiculos(vs);
             setPerfiles(ps);
+            setCatalogo(cat);
         } catch (e: any) {
             toast('Error al cargar la flota', 'error', e.message);
         } finally {
@@ -154,6 +167,49 @@ export function MaintenanceFleetAdmin() {
     };
 
     const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+    const abrirCambio = (v: MttoVehiculo) => {
+        setModalCambio(v);
+        setArregloId(''); setBuscarArreglo('');
+        setFechaCambio(new Date().toISOString().slice(0, 10));
+        setKmCambio(v.km_actual?.toString() ?? '');
+        setNotaCambio(''); setErrorCambio('');
+    };
+
+    const guardarCambio = async () => {
+        if (!modalCambio) return;
+        if (!arregloId) { setErrorCambio('Elija qué repuesto se cambió'); return; }
+        if (!fechaCambio) { setErrorCambio('Indique la fecha del cambio'); return; }
+        setGuardandoCambio(true);
+        setErrorCambio('');
+        try {
+            await MttoService.registrarComponenteManual({
+                vehiculoId: modalCambio.id,
+                arregloId,
+                fecha: fechaCambio,
+                km: kmCambio ? Number(kmCambio) : null,
+                nota: notaCambio || null,
+            });
+            toast('Cambio registrado', 'success', 'Ya aparece en el historial del vehículo.');
+            setModalCambio(null);
+            cargar();
+        } catch (e: any) {
+            setErrorCambio(e.message || 'No se pudo registrar');
+        } finally {
+            setGuardandoCambio(false);
+        }
+    };
+
+    // Solo tiene sentido registrar repuestos que declaren vida útil: los demás
+    // no generan vencimiento.
+    const arreglosConVida = catalogo
+        .map((s) => ({
+            sistema: s.nombre,
+            arreglos: s.arreglos.filter((a) =>
+                (a.vida_util_km !== null || a.vida_util_meses !== null) &&
+                (!buscarArreglo || a.nombre.toLowerCase().includes(buscarArreglo.toLowerCase()))),
+        }))
+        .filter((g) => g.arreglos.length > 0);
 
     if (loading) {
         return <div className="flex items-center justify-center py-24 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin mr-2" /> Cargando flota...</div>;
@@ -223,10 +279,17 @@ export function MaintenanceFleetAdmin() {
                                     </div>
                                 </div>
                                 {esAdmin && (
-                                    <button onClick={() => abrirEdicion(v)}
-                                        className="p-2.5 text-muted-foreground hover:text-primary min-h-[44px] min-w-[44px] shrink-0" title="Editar ficha">
-                                        <Pencil className="w-4 h-4" />
-                                    </button>
+                                    <div className="flex flex-col gap-1 shrink-0">
+                                        <button onClick={() => abrirEdicion(v)}
+                                            className="p-2.5 text-muted-foreground hover:text-primary min-h-[44px] min-w-[44px]" title="Editar ficha">
+                                            <Pencil className="w-4 h-4" />
+                                        </button>
+                                        <button onClick={() => abrirCambio(v)}
+                                            className="p-2.5 text-muted-foreground hover:text-primary min-h-[44px] min-w-[44px]"
+                                            title="Registrar un cambio de repuesto hecho antes o fuera del sistema">
+                                            <History className="w-4 h-4" />
+                                        </button>
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -327,6 +390,97 @@ export function MaintenanceFleetAdmin() {
                                 className="w-full bg-primary text-primary-foreground py-3 rounded-xl font-semibold min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">
                                 {guardando && <Loader2 className="w-4 h-4 animate-spin" />}
                                 {editando ? 'Guardar cambios' : 'Crear vehículo'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Registrar un cambio hecho antes o fuera del sistema. Alimenta el
+                seguimiento de vida útil sin necesidad de una orden. */}
+            {modalCambio && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/60" onClick={() => !guardandoCambio && setModalCambio(null)} />
+                    <div className="relative w-full max-w-md bg-card border border-border rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+                        <div className="flex items-center justify-between p-4 border-b border-border">
+                            <h3 className="font-bold text-lg">Cambio anterior — {modalCambio.codigo}</h3>
+                            <button onClick={() => setModalCambio(null)} className="p-2 hover:bg-muted rounded-full min-h-[44px] min-w-[44px]">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                            <p className="text-xs text-muted-foreground">
+                                Para repuestos cambiados antes de usar el sistema o en otro taller.
+                                A partir de la fecha y el kilometraje se calcula cuándo toca el
+                                próximo reemplazo.
+                            </p>
+
+                            <div>
+                                <label className="text-sm font-medium block mb-1">¿Qué se cambió? *</label>
+                                <div className="relative mb-2">
+                                    <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+                                    <input value={buscarArreglo} onChange={(e) => setBuscarArreglo(e.target.value)}
+                                        placeholder="Buscar repuesto..."
+                                        className="w-full border border-border rounded-lg pl-9 pr-3 py-2 bg-background text-sm min-h-[44px]" />
+                                </div>
+                                {arreglosConVida.length === 0 ? (
+                                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                                        Ningún arreglo tiene vida útil definida. Cárguela primero en
+                                        Catálogo de Precios; sin eso no hay vencimiento que calcular.
+                                    </p>
+                                ) : (
+                                    <select value={arregloId} onChange={(e) => setArregloId(e.target.value)}
+                                        className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px]">
+                                        <option value="">Seleccione...</option>
+                                        {arreglosConVida.map((g) => (
+                                            <optgroup key={g.sistema} label={g.sistema}>
+                                                {g.arreglos.map((a) => (
+                                                    <option key={a.id} value={a.id}>
+                                                        {a.nombre}
+                                                        {a.vida_util_km ? ` — ${a.vida_util_km.toLocaleString('es-CO')} km` : ''}
+                                                        {a.vida_util_meses ? ` — ${a.vida_util_meses} meses` : ''}
+                                                    </option>
+                                                ))}
+                                            </optgroup>
+                                        ))}
+                                    </select>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-sm font-medium block mb-1">Fecha del cambio *</label>
+                                    <input type="date" value={fechaCambio} max={new Date().toISOString().slice(0, 10)}
+                                        onChange={(e) => setFechaCambio(e.target.value)}
+                                        className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px]" />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-medium block mb-1">Kilometraje</label>
+                                    <input type="number" value={kmCambio} onChange={(e) => setKmCambio(e.target.value)}
+                                        placeholder="Si lo sabe"
+                                        className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px]" />
+                                </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Sin kilometraje solo se calcula el vencimiento por tiempo.
+                            </p>
+
+                            <div>
+                                <label className="text-sm font-medium block mb-1">Nota</label>
+                                <input value={notaCambio} onChange={(e) => setNotaCambio(e.target.value)}
+                                    placeholder="Ej: cambiado en el taller de la esquina"
+                                    className="w-full border border-border rounded-lg px-3 py-2.5 bg-background min-h-[44px]" />
+                            </div>
+
+                            {errorCambio && <p className="text-sm text-destructive">{errorCambio}</p>}
+                        </div>
+
+                        <div className="p-4 border-t border-border">
+                            <button onClick={guardarCambio} disabled={guardandoCambio}
+                                className="w-full bg-primary text-primary-foreground py-3 rounded-xl font-semibold min-h-[44px] flex items-center justify-center gap-2 disabled:opacity-60">
+                                {guardandoCambio && <Loader2 className="w-4 h-4 animate-spin" />}
+                                Registrar cambio
                             </button>
                         </div>
                     </div>

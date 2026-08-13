@@ -20,7 +20,7 @@ import { money, TIPO_SERVICIO_LABEL, fechaVencimiento } from '../lib/mttoLabels'
  */
 
 type EstadoItem = 'B' | 'R' | 'M' | 'NA';
-type Marca = { estado: EstadoItem; observacion: string; fotos: string[] };
+type Marca = { estado: EstadoItem; observacion: string; fotos: string[]; esRecomendacion: boolean };
 type Linea = {
     key: string; arreglo_id: string; descripcion: string; sistema: string; repuesto: string;
     cantidad: number; valor_unitario: number; mano_obra: number; prioridad: string; fotos: string[];
@@ -57,7 +57,12 @@ export function MaintenanceDiagnoseByLink() {
                 const guardado = localStorage.getItem(claveBorrador);
                 if (guardado) {
                     const b = JSON.parse(guardado);
-                    setMarcas(b.marcas || {});
+                    // Un borrador guardado antes de esta versión no trae el
+                    // flag de recomendación: se normaliza al leerlo.
+                    setMarcas(Object.fromEntries(
+                        Object.entries(b.marcas || {}).map(([k, v]: [string, any]) =>
+                            [k, { fotos: [], observacion: '', ...v, esRecomendacion: v?.esRecomendacion ?? false }])
+                    ));
                     setLineas(b.lineas || []);
                     if (b.diagnostico) setDiagnostico(b.diagnostico);
                     if (b.kilometraje) setKilometraje(b.kilometraje);
@@ -82,7 +87,11 @@ export function MaintenanceDiagnoseByLink() {
         [secciones]
     );
 
-    const noBuenos = Object.entries(marcas).filter(([, m]) => m.estado !== 'B');
+    // Ojo: ahora un ítem en 'B' puede tener fila si lleva comentario. Para el
+    // semáforo eso sigue contando como bueno; solo R/M/NA restan.
+    const conFila = Object.entries(marcas);
+    const noBuenos = conFila.filter(([, m]) => m.estado !== 'B');
+    const recomendaciones = conFila.filter(([, m]) => m.esRecomendacion).length;
     const enR = noBuenos.filter(([, m]) => m.estado === 'R').length;
     const enM = noBuenos.filter(([, m]) => m.estado === 'M').length;
     const enNA = noBuenos.filter(([, m]) => m.estado === 'NA').length;
@@ -93,7 +102,7 @@ export function MaintenanceDiagnoseByLink() {
     // Problemas que bloquean el envío, mostrados antes de intentar
     const problemas = useMemo(() => {
         const p: string[] = [];
-        for (const [itemId, m] of noBuenos) {
+        for (const [itemId, m] of noBuenos) { // solo R/M/NA: los buenos no bloquean
             const nombre = secciones.flatMap((s: any) => s.items).find((i: any) => i.id === itemId)?.nombre || 'Ítem';
             if ((m.estado === 'R' || m.estado === 'M') && !m.observacion.trim()) p.push(`"${nombre}" está en ${m.estado} y le falta la observación`);
             if (m.estado === 'M' && m.fotos.length === 0) p.push(`"${nombre}" está en M y le falta la foto`);
@@ -108,8 +117,12 @@ export function MaintenanceDiagnoseByLink() {
         setError('');
         try {
             await MttoService.guardarDiagnosticoPorToken(token!, pin, {
-                hallazgos: noBuenos.map(([item_id, m]) => ({
-                    item_id, estado: m.estado, observacion: m.observacion, fotos: m.fotos,
+                // Se mandan todas las filas, incluidas las de ítems buenos con
+                // comentario. Las que no tienen texto y están en B nunca
+                // llegan aquí porque se borran al perder el foco.
+                hallazgos: conFila.map(([item_id, m]) => ({
+                    item_id, estado: m.estado, observacion: m.observacion,
+                    es_recomendacion: m.esRecomendacion, fotos: m.fotos,
                 })),
                 reparaciones: lineas.map((l) => ({
                     arreglo_id: l.arreglo_id || null, descripcion: l.descripcion, sistema: l.sistema,
@@ -179,14 +192,17 @@ export function MaintenanceDiagnoseByLink() {
 
             {paso === 'inspeccion' && (
                 <>
-                    <div className="grid grid-cols-4 gap-2 text-center mb-3">
+                    <div className="grid grid-cols-5 gap-2 text-center mb-3">
                         <Contador label="Bueno" valor={totalItems - noBuenos.length} color="text-emerald-600" />
                         <Contador label="Regular" valor={enR} color="text-amber-600" />
                         <Contador label="Malo" valor={enM} color="text-red-600" />
                         <Contador label="N/A" valor={enNA} color="text-muted-foreground" />
+                        <Contador label="Recom." valor={recomendaciones} color="text-blue-600" />
                     </div>
                     <p className="text-xs text-muted-foreground mb-3">
                         Todo arranca en <strong>Bueno</strong>. Marque solo lo que esté mal.
+                        Si algo está bien pero quiere dejar un comentario o una recomendación,
+                        use el enlace que aparece debajo del ítem.
                     </p>
                     <div className="space-y-2">
                         {secciones.map((s: any) => (
@@ -225,6 +241,7 @@ export function MaintenanceDiagnoseByLink() {
                     <div className="bg-card border border-border rounded-xl p-4 text-sm space-y-1">
                         <div className="flex justify-between"><span className="text-muted-foreground">Ítems en regular</span><span>{enR}</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">Ítems en malo</span><span>{enM}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Recomendaciones</span><span>{recomendaciones}</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">Reparaciones cotizadas</span><span>{lineas.length}</span></div>
                         <div className="flex justify-between font-bold pt-2 border-t border-border mt-2">
                             <span>TOTAL COTIZADO</span><span className="text-primary text-lg">{money(total)}</span>
@@ -306,16 +323,30 @@ const BOTONES: { k: EstadoItem; label: string; activo: string }[] = [
 ];
 
 function Item({ item, marcas, setMarcas, ordenId }: any) {
-    const marca: Marca = marcas[item.id] || { estado: 'B', observacion: '', fotos: [] };
+    const marca: Marca = marcas[item.id] || { estado: 'B', observacion: '', fotos: [], esRecomendacion: false };
     const [subiendo, setSubiendo] = useState(false);
+    // Un ítem bueno no muestra el campo de comentario hasta que lo pidan: son
+    // 97 ítems y el llenado por excepción es lo que hace rápida la inspección.
+    const [notaAbierta, setNotaAbierta] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
     const set = (patch: Partial<Marca>) =>
         setMarcas((prev: any) => ({ ...prev, [item.id]: { ...marca, ...patch } }));
 
+    const quitar = () =>
+        setMarcas((prev: any) => { const n = { ...prev }; delete n[item.id]; return n; });
+
     const cambiar = (estado: EstadoItem) => {
         if (estado === 'B') {
-            setMarcas((prev: any) => { const n = { ...prev }; delete n[item.id]; return n; });
+            // Vuelve a bueno limpio, salvo que ya tuviera comentario: en ese
+            // caso se conserva como observación sobre algo que está bien.
+            if (marca.observacion.trim()) {
+                set({ estado: 'B', fotos: [] });
+                setNotaAbierta(true);
+            } else {
+                quitar();
+                setNotaAbierta(false);
+            }
         } else {
             set({ estado });
         }
@@ -331,7 +362,11 @@ function Item({ item, marcas, setMarcas, ordenId }: any) {
         } finally { setSubiendo(false); }
     };
 
+    const esBueno = marca.estado === 'B';
     const necesitaObs = marca.estado === 'R' || marca.estado === 'M';
+    // En bueno el comentario es opcional; se muestra si ya hay texto o si lo
+    // pidieron con el enlace de abajo.
+    const mostrarNota = necesitaObs || (esBueno && (notaAbierta || !!marca.observacion.trim()));
 
     return (
         <div className="p-3">
@@ -351,12 +386,33 @@ function Item({ item, marcas, setMarcas, ordenId }: any) {
                 </div>
             </div>
 
-            {necesitaObs && (
+            {/* En un ítem bueno el comentario es opcional y está escondido
+                hasta que lo pidan, para no llenar la pantalla de 97 campos. */}
+            {esBueno && !mostrarNota && (
+                <button onClick={() => setNotaAbierta(true)}
+                    className="mt-1 text-xs text-muted-foreground underline min-h-[36px]">
+                    Agregar observación o recomendación
+                </button>
+            )}
+
+            {mostrarNota && (
                 <div className="mt-2 space-y-2">
-                    <textarea value={marca.observacion} onChange={(e) => set({ observacion: e.target.value })}
-                        placeholder="¿Qué encontró? (obligatorio)"
+                    <textarea value={marca.observacion}
+                        onChange={(e) => set({ observacion: e.target.value })}
+                        onBlur={() => { if (esBueno && !marca.observacion.trim()) { quitar(); setNotaAbierta(false); } }}
+                        placeholder={esBueno
+                            ? 'Comentario o recomendación (opcional)'
+                            : '¿Qué encontró? (obligatorio)'}
                         className={clsx('w-full border rounded-lg px-3 py-2 text-sm bg-background min-h-[60px]',
-                            !marca.observacion.trim() ? 'border-red-500/60' : 'border-border')} />
+                            necesitaObs && !marca.observacion.trim() ? 'border-red-500/60' : 'border-border')} />
+
+                    <label className="flex items-center gap-2 text-xs min-h-[36px]">
+                        <input type="checkbox" checked={marca.esRecomendacion}
+                            onChange={(e) => set({ esRecomendacion: e.target.checked })}
+                            className="w-4 h-4" />
+                        Es una recomendación, no un daño
+                    </label>
+
                     <div className="flex items-center gap-2 flex-wrap">
                         {marca.fotos.map((p) => (
                             <div key={p} className="w-14 h-14 rounded-lg border border-border bg-emerald-500/10 flex items-center justify-center relative">

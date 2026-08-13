@@ -12,7 +12,7 @@ import {
     type MttoChecklistItem, type MttoUsuarioRol, type MttoEventoConAutor,
     type MttoReparacionFoto, type MttoFirmante,
 } from '../lib/mttoService';
-import type { MttoEstadoHallazgo, MttoTipoServicio, MttoDecision, MttoPrioridad } from '../types/database';
+import type { MttoEstadoItem, MttoEstadoHallazgo, MttoTipoServicio, MttoDecision, MttoPrioridad } from '../types/database';
 import { ESTADO_LABEL, ESTADO_COLOR, TIPO_SERVICIO_LABEL, EVENTO_LABEL, money, toast } from '../lib/mttoLabels';
 
 type OrdenConVehiculo = MttoOrden & { vehiculo?: MttoVehiculo };
@@ -370,17 +370,25 @@ function TabInspeccion({ ordenId, checklist, hallazgos, puedoEditar, motivoBloqu
     const hallazgoPorItem = useMemo(() => new Map(hallazgos.map((h) => [h.item_id, h])), [hallazgos]);
 
     const totalItems = checklist.reduce((acc, s) => acc + s.items.length, 0);
+    // Ojo: ahora un ítem en 'B' puede tener fila si lleva comentario, así que
+    // el conteo de buenos NO puede ser "total menos filas": hay que restar
+    // solo los que están en R/M/NA.
     const contadores = { R: 0, M: 0, NA: 0 };
-    for (const h of hallazgos) contadores[h.estado as 'R' | 'M' | 'NA']++;
-    const bueno = totalItems - hallazgos.length;
+    for (const h of hallazgos) {
+        if (h.estado === 'R' || h.estado === 'M' || h.estado === 'NA') contadores[h.estado]++;
+    }
+    const noBuenos = contadores.R + contadores.M + contadores.NA;
+    const bueno = totalItems - noBuenos;
+    const recomendaciones = hallazgos.filter((h) => h.es_recomendacion).length;
 
     return (
         <div className="space-y-3">
-            <div className="grid grid-cols-4 gap-2 text-center">
+            <div className="grid grid-cols-5 gap-2 text-center">
                 <Contador label="Bueno" valor={bueno} color="text-emerald-600 dark:text-emerald-400" />
                 <Contador label="Regular" valor={contadores.R} color="text-amber-600 dark:text-amber-400" />
                 <Contador label="Malo" valor={contadores.M} color="text-red-600 dark:text-red-400" />
                 <Contador label="N/A" valor={contadores.NA} color="text-muted-foreground" />
+                <Contador label="Recom." valor={recomendaciones} color="text-blue-600 dark:text-blue-400" />
             </div>
 
             <Bloqueado activo={puedoEditar} motivo={motivoBloqueo}>
@@ -471,25 +479,40 @@ function ChecklistItemRow({ item, hallazgo, ordenId, puedoEditar, onCambio }: {
     onCambio: () => void;
 }) {
     const [observacion, setObservacion] = useState(hallazgo?.observacion || '');
+    const [esRecomendacion, setEsRecomendacion] = useState(!!hallazgo?.es_recomendacion);
     const [subiendo, setSubiendo] = useState(false);
     const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
+    // Un ítem bueno no muestra el campo hasta que lo pidan: son 97 ítems.
+    const [notaAbierta, setNotaAbierta] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => { setObservacion(hallazgo?.observacion || ''); }, [hallazgo?.observacion]);
+    useEffect(() => { setEsRecomendacion(!!hallazgo?.es_recomendacion); }, [hallazgo?.es_recomendacion]);
 
-    const estadoActual: 'B' | MttoEstadoHallazgo = hallazgo?.estado || 'B';
+    const estadoActual: MttoEstadoItem = hallazgo?.estado || 'B';
+    const esBueno = estadoActual === 'B';
     const necesitaObs = estadoActual === 'R' || estadoActual === 'M';
+    // En bueno, el comentario es opcional: se muestra si ya existe o si lo pidieron.
+    const mostrarNota = necesitaObs || (esBueno && (notaAbierta || !!observacion.trim()));
 
-    const cambiarEstado = async (nuevo: 'B' | MttoEstadoHallazgo) => {
+    const cambiarEstado = async (nuevo: MttoEstadoItem) => {
         if (!puedoEditar) return;
         try {
             if (nuevo === 'B') {
-                await MttoService.marcarBueno(ordenId, item.id);
+                // Vuelve a bueno. Si había comentario, se conserva como
+                // observación sobre algo que está bien; si no, se borra la fila.
+                if (observacion.trim()) {
+                    await MttoService.setHallazgo(ordenId, item.id, 'B', observacion, esRecomendacion);
+                    setNotaAbierta(true);
+                } else {
+                    await MttoService.marcarBueno(ordenId, item.id);
+                    setNotaAbierta(false);
+                }
             } else if (nuevo === 'NA') {
-                await MttoService.setHallazgo(ordenId, item.id, 'NA', '');
+                await MttoService.setHallazgo(ordenId, item.id, 'NA', observacion, esRecomendacion);
             } else {
-                // R o M sin observación aún: se guarda con placeholder editable; el submit exige que no quede vacío.
-                await MttoService.setHallazgo(ordenId, item.id, nuevo, observacion || '');
+                // R o M sin observación aún: el submit exige que no quede vacía.
+                await MttoService.setHallazgo(ordenId, item.id, nuevo, observacion || '', esRecomendacion);
             }
             onCambio();
         } catch (e: any) {
@@ -497,10 +520,16 @@ function ChecklistItemRow({ item, hallazgo, ordenId, puedoEditar, onCambio }: {
         }
     };
 
-    const guardarObservacion = async () => {
-        if (!hallazgo || estadoActual === 'B') return;
+    const guardarObservacion = async (flag = esRecomendacion) => {
+        if (!puedoEditar) return;
         try {
-            await MttoService.setHallazgo(ordenId, item.id, estadoActual as MttoEstadoHallazgo, observacion);
+            if (esBueno && !observacion.trim()) {
+                // Comentario borrado en un ítem bueno: vuelve a bueno limpio.
+                if (hallazgo) await MttoService.marcarBueno(ordenId, item.id);
+                setNotaAbierta(false);
+            } else {
+                await MttoService.setHallazgo(ordenId, item.id, estadoActual, observacion, flag);
+            }
             onCambio();
         } catch (e: any) {
             toast('No se pudo guardar la observación', 'error', e.message);
@@ -552,26 +581,40 @@ function ChecklistItemRow({ item, hallazgo, ordenId, puedoEditar, onCambio }: {
                 </div>
             </div>
 
-            {necesitaObs && hallazgo && (
+            {esBueno && !mostrarNota && puedoEditar && (
+                <button onClick={() => setNotaAbierta(true)}
+                    className="mt-1 text-xs text-muted-foreground underline min-h-[36px]">
+                    Agregar observación o recomendación
+                </button>
+            )}
+
+            {mostrarNota && (
                 <div className="mt-2 space-y-2">
                     <textarea
                         value={observacion}
                         onChange={(e) => setObservacion(e.target.value)}
-                        onBlur={guardarObservacion}
+                        onBlur={() => guardarObservacion()}
                         disabled={!puedoEditar}
-                        placeholder="Observación (obligatoria)"
+                        placeholder={esBueno ? 'Comentario o recomendación (opcional)' : 'Observación (obligatoria)'}
                         className={clsx(
                             'w-full border rounded-lg px-3 py-2 text-sm bg-background min-h-[60px]',
-                            !observacion.trim() ? 'border-red-500/60' : 'border-border'
+                            necesitaObs && !observacion.trim() ? 'border-red-500/60' : 'border-border'
                         )}
                     />
+
+                    <label className="flex items-center gap-2 text-xs min-h-[36px]">
+                        <input type="checkbox" checked={esRecomendacion} disabled={!puedoEditar}
+                            onChange={(e) => { setEsRecomendacion(e.target.checked); guardarObservacion(e.target.checked); }}
+                            className="w-4 h-4" />
+                        Es una recomendación, no un daño
+                    </label>
                     <div className="flex items-center gap-2 flex-wrap">
-                        {(hallazgo.fotos || []).map((f) => (
+                        {(hallazgo?.fotos || []).map((f) => (
                             <button key={f.id} onClick={() => cargarUrlFoto(f)} className="w-14 h-14 rounded-lg overflow-hidden border border-border bg-muted">
                                 {fotoUrls[f.id] ? <img src={fotoUrls[f.id]} alt="" className="w-full h-full object-cover" /> : <span className="text-[9px] text-muted-foreground flex items-center justify-center h-full">Ver</span>}
                             </button>
                         ))}
-                        {puedoEditar && (
+                        {puedoEditar && hallazgo && (
                             <button
                                 onClick={() => fileInputRef.current?.click()}
                                 disabled={subiendo}
@@ -592,7 +635,7 @@ function ChecklistItemRow({ item, hallazgo, ordenId, puedoEditar, onCambio }: {
                             onChange={(e) => { const f = e.target.files?.[0]; if (f) subirFoto(f); e.target.value = ''; }}
                         />
                     </div>
-                    {estadoActual === 'M' && (hallazgo.fotos || []).length === 0 && (
+                    {estadoActual === 'M' && (hallazgo?.fotos || []).length === 0 && (
                         <p className="text-xs text-red-600 dark:text-red-400">Falta al menos 1 foto — obligatoria para ítems en Malo.</p>
                     )}
                 </div>

@@ -443,8 +443,9 @@ export type Database = {
                     id: string
                     orden_id: string
                     item_id: string
-                    estado: MttoEstadoHallazgo
+                    estado: MttoEstadoItem
                     observacion: string | null
+                    es_recomendacion: boolean
                     creado_por: string
                     created_at: string
                 }
@@ -452,8 +453,9 @@ export type Database = {
                     id?: string
                     orden_id: string
                     item_id: string
-                    estado: MttoEstadoHallazgo
+                    estado: MttoEstadoItem
                     observacion?: string | null
+                    es_recomendacion?: boolean
                     creado_por?: string
                     created_at?: string
                 }
@@ -461,8 +463,9 @@ export type Database = {
                     id?: string
                     orden_id?: string
                     item_id?: string
-                    estado?: MttoEstadoHallazgo
+                    estado?: MttoEstadoItem
                     observacion?: string | null
+                    es_recomendacion?: boolean
                     creado_por?: string
                     created_at?: string
                 }
@@ -660,6 +663,7 @@ export type Database = {
                     regular: number
                     malo: number
                     no_aplica: number
+                    recomendaciones: number
                     tiene_critico_malo: boolean | null
                 }
             }

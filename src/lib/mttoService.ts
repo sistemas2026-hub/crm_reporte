@@ -13,7 +13,7 @@ import { compressImage, type ImageMetadata } from './imageUtils';
 import type {
     Database,
     MttoDecision,
-    MttoEstadoHallazgo,
+    MttoEstadoItem,
     MttoTipoVehiculo,
 } from '../types/database';
 
@@ -275,17 +275,34 @@ export const MttoService = {
         return ensure(data as any, error);
     },
 
-    /** Marca un ítem en R/M/NA con su observación (upsert por orden+item). */
-    async setHallazgo(ordenId: string, itemId: string, estado: MttoEstadoHallazgo, observacion: string): Promise<MttoOrdenHallazgo> {
+    /**
+     * Marca un ítem con su observación (upsert por orden+item).
+     *
+     * Acepta también 'B': un ítem bueno PUEDE tener fila si el mecánico
+     * quiso dejar un comentario ("las llantas están buenas pero les queda
+     * poco"). En ese caso la observación es obligatoria — lo impone el CHECK
+     * mtto_hallazgo_obs_requerida. Un ítem bueno sin nada que decir no tiene
+     * fila: para eso está marcarBueno().
+     */
+    async setHallazgo(
+        ordenId: string,
+        itemId: string,
+        estado: MttoEstadoItem,
+        observacion: string,
+        esRecomendacion = false,
+    ): Promise<MttoOrdenHallazgo> {
         const { data, error } = await supabase
             .from('mtto_orden_hallazgo')
-            .upsert({ orden_id: ordenId, item_id: itemId, estado, observacion }, { onConflict: 'orden_id,item_id' })
+            .upsert(
+                { orden_id: ordenId, item_id: itemId, estado, observacion, es_recomendacion: esRecomendacion },
+                { onConflict: 'orden_id,item_id' },
+            )
             .select()
             .single();
         return ensure(data, error);
     },
 
-    /** Vuelve un ítem a "Bueno": como Bueno no se guarda, se borra la fila. */
+    /** Vuelve un ítem a "Bueno" limpio, sin comentario: se borra la fila. */
     async marcarBueno(ordenId: string, itemId: string): Promise<void> {
         const { error } = await supabase
             .from('mtto_orden_hallazgo')
@@ -493,6 +510,29 @@ export const MttoService = {
         if (vehiculoId) query = query.eq('vehiculo_id', vehiculoId);
         const { data, error } = await query;
         return ensure(data, error);
+    },
+
+    /**
+     * Registra un cambio de repuesto hecho ANTES o FUERA del sistema (ej. el
+     * aceite se cambió el mes pasado en otro taller). Alimenta el seguimiento
+     * de vida útil sin necesidad de una orden. Solo admin del módulo.
+     */
+    async registrarComponenteManual(params: {
+        vehiculoId: string;
+        arregloId: string;
+        fecha: string;
+        km?: number | null;
+        nota?: string | null;
+    }): Promise<string> {
+        const { data, error } = await supabase.rpc('mtto_registrar_componente_manual', {
+            p_vehiculo_id: params.vehiculoId,
+            p_arreglo_id: params.arregloId,
+            p_fecha: params.fecha,
+            p_km: params.km ?? null,
+            p_nota: params.nota ?? null,
+        });
+        if (error) throw new Error(error.message);
+        return data as string;
     },
 
     /** Reparaciones autorizadas más frecuentes de un vehículo (para detectar recurrencias). */

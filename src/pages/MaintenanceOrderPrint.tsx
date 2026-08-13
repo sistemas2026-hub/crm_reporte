@@ -131,13 +131,13 @@ export function MaintenanceOrderPrint() {
                 <Dato label="Diagnóstico" value={orden.diagnostico} />
             </div>
 
-            {/* Hallazgos (solo lo que no está en Bueno) */}
+            {/* Hallazgos: los defectos. Las recomendaciones van aparte. */}
             <Seccion titulo="Hallazgos de la inspección">
-                {hallazgos.length === 0 ? (
+                {hallazgos.filter((h) => !h.es_recomendacion).length === 0 ? (
                     <p className="text-sm text-muted-foreground">Sin hallazgos — todos los ítems aplicables quedaron en Bueno.</p>
                 ) : (
                     <div className="space-y-3">
-                        {hallazgos.map((h) => {
+                        {hallazgos.filter((h) => !h.es_recomendacion).map((h) => {
                             const info = itemInfo.get(h.item_id);
                             return (
                                 <div key={h.id} className="text-sm border-b border-border/60 pb-2 print-avoid-break">
@@ -161,6 +161,23 @@ export function MaintenanceOrderPrint() {
                     </div>
                 )}
             </Seccion>
+
+            {/* Recomendaciones del mecánico */}
+            {hallazgos.some((h) => h.es_recomendacion) && (
+                <Seccion titulo="Recomendaciones del mecánico">
+                    <div className="space-y-2">
+                        {hallazgos.filter((h) => h.es_recomendacion).map((h) => {
+                            const info = itemInfo.get(h.item_id);
+                            return (
+                                <div key={h.id} className="text-sm border-b border-border/40 pb-1.5 print-avoid-break">
+                                    <span className="font-semibold">{info?.nombre || h.item_id}</span>
+                                    {h.observacion && <span className="text-muted-foreground"> — {h.observacion}</span>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </Seccion>
+            )}
 
             {/* Cotización */}
             <Seccion titulo="Cotización">

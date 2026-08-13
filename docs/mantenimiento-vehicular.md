@@ -231,6 +231,56 @@ un registro periódico de odómetro. Las alertas **por tiempo sí son exactas
 siempre**. Si más adelante se quiere precisión en las de km, hay que agregar
 una pantalla donde el supervisor anote el kilometraje cada semana.
 
+## 2f. Observaciones en ítems buenos y recomendaciones
+
+El diseño original solo guardaba lo que estaba mal: un ítem en Bueno no tenía
+fila (`CHECK (estado <> 'B')`). Eso dejaba al mecánico sin dónde decir "las
+llantas están buenas pero les queda poco" salvo marcándolas en Regular, lo que
+distorsionaba el semáforo.
+
+Ahora:
+
+- En cualquier ítem en **Bueno** aparece un enlace discreto **"Agregar
+  observación o recomendación"**. El campo está escondido hasta que se pida:
+  son 97 ítems y el llenado por excepción es lo que mantiene rápida la
+  inspección.
+- Debajo del comentario, casilla **"Es una recomendación, no un daño"**,
+  disponible en cualquier estado.
+- Si se borra el texto de un ítem bueno, la fila se elimina y vuelve a bueno
+  limpio.
+
+**Lo que NO cambió, a propósito:**
+
+- El conteo del semáforo. Un ítem bueno con comentario **sigue contando como
+  bueno**: la vista resta solo los que están en R/M/NA.
+- Las validaciones duras. `mtto_enviar_a_revision` y
+  `mtto_guardar_diagnostico_por_token` filtran por `estado IN ('R','M')`, así
+  que un comentario en Bueno o una recomendación **no exigen foto ni
+  cotización** y no bloquean el envío. La foto obligatoria en M sigue intacta.
+
+**Dónde se ven:** en la pantalla del aprobador y en la vista imprimible, las
+recomendaciones salen en un bloque propio, separadas de los hallazgos, para
+que no se confundan con defectos que hay que reparar.
+
+## 2g. Registrar cambios hechos fuera del sistema
+
+El seguimiento de vida útil solo se alimentaba al cerrar órdenes, así que
+arrancaba en cero: si al MC-01 le cambiaron el aceite el mes pasado en otro
+taller, el sistema no lo sabía.
+
+En **Flota de Vehículos**, cada vehículo tiene un botón de historial que abre
+**"Cambio anterior"**: se elige el repuesto, la fecha, el kilometraje (si se
+sabe) y una nota. A partir de ahí se calcula el próximo vencimiento igual que
+si hubiera pasado por una orden, y aparece de inmediato en el bloque "Vida
+útil de los repuestos" del historial.
+
+Solo aparecen en el selector los arreglos que **tengan vida útil definida** en
+el catálogo: los demás no generan vencimiento. Si el listado sale vacío, hay
+que cargar las vidas útiles primero.
+
+Sin kilometraje solo se calcula el vencimiento **por tiempo**. La RPC es
+`mtto_registrar_componente_manual`, restringida a admin del módulo.
+
 ## 3. Dar acceso al menú
 
 El menú lateral ya trae el grupo **"Mantenimiento"** con tres ítems:

@@ -99,6 +99,11 @@ export function MaintenanceSignByLink() {
     const esAprobar = datos.accion === 'aprobar';
     const quien = firmante?.nombre || usuario?.nombre || 'Usted';
 
+    // Los consejos del mecánico se muestran aparte: no son defectos y no
+    // deben confundirse con lo que hay que reparar.
+    const defectos = hallazgos.filter((h: any) => !h.es_recomendacion);
+    const consejos = hallazgos.filter((h: any) => h.es_recomendacion);
+
     const subtotal = reparaciones.reduce((acc: number, r: any) => acc + Number(r.total), 0);
     const totalPropuesto = Math.round(subtotal * (1 + Number(orden.iva_tasa)));
     const hayCriticoMalo = hallazgos.some((h: any) => h.estado === 'M' && h.critico);
@@ -133,12 +138,12 @@ export function MaintenanceSignByLink() {
                 </Bloque>
             )}
 
-            <Bloque titulo={`Hallazgos (${hallazgos.length})`}>
-                {hallazgos.length === 0 ? (
+            <Bloque titulo={`Hallazgos (${defectos.length})`}>
+                {defectos.length === 0 ? (
                     <p className="text-sm text-muted-foreground">Sin hallazgos: todo quedó en buen estado.</p>
                 ) : (
                     <div className="space-y-3">
-                        {hallazgos.map((h: any) => (
+                        {defectos.map((h: any) => (
                             <div key={h.id} className="text-sm border-b border-border/50 pb-2 last:border-0">
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <span className={clsx('text-[11px] font-bold px-1.5 py-0.5 rounded border',
@@ -163,6 +168,22 @@ export function MaintenanceSignByLink() {
                     </div>
                 )}
             </Bloque>
+
+            {consejos.length > 0 && (
+                <Bloque titulo={`Recomendaciones del mecánico (${consejos.length})`}>
+                    <p className="text-xs text-muted-foreground mb-2">
+                        No son daños: son sugerencias para tener en cuenta.
+                    </p>
+                    <div className="space-y-2">
+                        {consejos.map((h: any) => (
+                            <div key={h.id} className="text-sm border-l-2 border-blue-500/50 pl-3">
+                                <div className="font-medium">{h.item}</div>
+                                {h.observacion && <p className="text-muted-foreground">{h.observacion}</p>}
+                            </div>
+                        ))}
+                    </div>
+                </Bloque>
+            )}
 
             <Bloque titulo="Cotización">
                 {reparaciones.length === 0 ? (
